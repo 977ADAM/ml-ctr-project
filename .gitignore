@@ -1,0 +1,14 @@
+venv
+*.csv
+*.log
+*.json
+*.db
+*.sqlite
+*.pyc
+__pycache__/
+*.vscode/
+*.env
+*.env.*
+*.bak
+*.tmp
+*.pkl
