@@ -5,7 +5,7 @@ class Config:
     version: str = '1.0.0'
     dataset: str = 'dataset.csv'
     target: str = 'CTR'
-    test_size: float = 0.63
+    test_size: float = 0.3
     random_state: int = 42
     iterations: int = 2000
     depth: int = 6
