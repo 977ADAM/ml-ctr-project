@@ -4,6 +4,7 @@ from dataclasses import dataclass
 class Config:
     version: str = '1.0.0'
     dataset: str = 'dataset.csv'
+    metadata: str = 'metadata.json'
     target: str = 'CTR'
     test_size: float = 0.3
     random_state: int = 42
@@ -15,5 +16,6 @@ class Config:
     loss_function: str = 'RMSE'
     eval_metric: str = 'RMSE'
     early_stopping_rounds: int = 100
+    model_path: str = 'catboost_model.pkl'
 
 config = Config()
