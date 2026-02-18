@@ -7,45 +7,53 @@ from catboost import CatBoostRegressor
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 
+try:
+    from .config import config
+    from .schema import FEATURE_SCHEMA
+except ImportError:
+    from config import config
+    from schema import FEATURE_SCHEMA
+
+
 # =========================
 # 2. Загрузка данных
 # =========================
-df = pd.read_csv("dataset.csv")
+df = pd.read_csv(config.dataset)
 
 # =========================
 # 3. Подготовка данных
 # =========================
 
 # Убираем ID (они не несут полезной информации)
-df = df.drop(columns=["ID кампании", "ID баннера"])
+df = df.drop(columns=FEATURE_SCHEMA.drop_columns)
 
 # Целевая переменная
-y = df["CTR"]
+y = df[config.target]
 
 # Признаки
-X = df.drop(columns=["CTR"])
+X = df.drop(columns=[config.target])
 
 # Категориальные признаки
-cat_features = ["Тип баннера", "Тип устройства"]
+cat_features = FEATURE_SCHEMA.categorical
 
 # =========================
 # 4. Разделение на train/test
 # =========================
 X_train, X_test, y_train, y_test = train_test_split(
-    X, y, test_size=0.2, random_state=42
+    X, y, test_size=config.test_size, random_state=config.random_state
 )
 
 # =========================
 # 5. Обучение модели
 # =========================
 model = CatBoostRegressor(
-    iterations=1000,
-    depth=6,
-    learning_rate=0.05,
-    loss_function="RMSE",
-    eval_metric="RMSE",
-    random_seed=42,
-    verbose=100
+    iterations=config.iterations,
+    depth=config.depth,
+    learning_rate=config.learning_rate,
+    loss_function=config.loss_function,
+    eval_metric=config.eval_metric,
+    random_seed=config.random_seed,
+    verbose=config.verbose
 )
 
 model.fit(
@@ -53,7 +61,7 @@ model.fit(
     y_train,
     cat_features=cat_features,
     eval_set=(X_test, y_test),
-    early_stopping_rounds=100
+    early_stopping_rounds=config.early_stopping_rounds
 )
 
 # =========================
