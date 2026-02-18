@@ -12,3 +12,4 @@ __pycache__/
 *.bak
 *.tmp
 *.pkl
+*.pth
