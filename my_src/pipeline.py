@@ -5,9 +5,13 @@ import pandas as pd
 import numpy as np
 import mlflow
 import mlflow.catboost
+import pickle
+from pathlib import Path
 from catboost import CatBoostRegressor
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+
+MODEL_PATH = Path("model.pkl")
 
 try:
     from .config import config
@@ -18,14 +22,10 @@ except ImportError:
 
 def main():
     mlflow.set_experiment("CTR_Pipeline_Experiment")
-    # =========================
-    # 2. Загрузка данных
-    # =========================
+
     df = pd.read_csv(config.dataset)
 
-    # =========================
-    # 3. Подготовка данных
-    # =========================
+
     # Проверяем наличие целевой переменной
     if config.target not in df.columns:
         raise KeyError(f"Target column '{config.target}' not found in dataset. Available columns: {list(df.columns)}")
@@ -43,11 +43,11 @@ def main():
     # Оставляем только реально существующие в X колонки
     cat_features = [c for c in FEATURE_SCHEMA.categorical if c in X.columns]
 
-    # =========================
-    # 4. Разделение на train/test
-    # =========================
     X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=config.test_size, random_state=config.random_state
+        X,
+        y,
+        test_size=config.test_size,
+        random_state=config.random_state
     )
 
     with mlflow.start_run():
@@ -100,6 +100,18 @@ def main():
         print(f"MAE: {mae:.6f}")
         print(f"RMSE: {rmse:.6f}")
         print(f"R2: {r2:.4f}")
+
+
+    model_artifact = {
+        "model": model,
+        "features": list(X.columns),
+        "cat_features": cat_features
+    }
+
+    with open(MODEL_PATH, "wb") as f:
+        pickle.dump(model_artifact, f)
+
+    print(f"Model saved to {MODEL_PATH}")
 
 if __name__ == "__main__":
     main()
