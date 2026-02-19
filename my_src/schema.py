@@ -18,6 +18,5 @@ FEATURE_SCHEMA = FeatureSchema(
     drop_columns=[
         "ID кампании",
         "ID баннера",
-        "Переходы"
     ]
 )

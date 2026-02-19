@@ -1,98 +1,116 @@
-import json
-from datetime import datetime, timezone
-import joblib
+# ==========================================
+# 1. Импорт библиотек
+# ==========================================
+
 import pandas as pd
-from catboost import CatBoostClassifier, Pool
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import roc_auc_score, log_loss
+import numpy as np
+from catboost import CatBoostRegressor
+from sklearn.model_selection import KFold
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 
-try:
-    from .config import config
-    from .schema import FEATURE_SCHEMA
-except ImportError:
-    from config import config
-    from schema import FEATURE_SCHEMA
+# ==========================================
+# 2. Загрузка данных
+# ==========================================
+df = pd.read_csv("dataset.csv")
 
+# ==========================================
+# 3. Подготовка данных
+# ==========================================
 
-def load_data(path, target_col=config.target) -> str:
-    df = pd.read_csv(path)
+# Удаляем ID (неинформативные признаки)
+df = df.drop(columns=["ID кампании", "ID баннера"])
 
-    y = df[target_col].astype(int).values
+# Целевая переменная
+y = df["CTR"]
 
-    X = df.drop(columns=[target_col])
+# Признаки
+X = df.drop(columns=["CTR"])
 
-    return X, y
+# Категориальные признаки
+cat_features = ["Тип баннера", "Тип устройства"]
 
-def build_model():
-    model = CatBoostClassifier(
-        iterations=config.iterations,
-        depth=config.depth,
-        learning_rate=config.learning_rate,
-        loss_function=config.loss_function,
-        eval_metric=config.eval_metric,
-        random_seed=config.random_seed,
-        verbose=config.verbose
+# ==========================================
+# 4. K-Fold кросс-валидация
+# ==========================================
+kf = KFold(n_splits=5, shuffle=True, random_state=42)
+
+rmse_scores = []
+mae_scores = []
+r2_scores = []
+
+fold = 1
+
+for train_idx, val_idx in kf.split(X):
+    print(f"\n========== Fold {fold} ==========")
+
+    X_train, X_val = X.iloc[train_idx], X.iloc[val_idx]
+    y_train, y_val = y.iloc[train_idx], y.iloc[val_idx]
+
+    model = CatBoostRegressor(
+        iterations=1000,
+        depth=6,
+        learning_rate=0.05,
+        loss_function="RMSE",
+        eval_metric="RMSE",
+        random_seed=42,
+        verbose=False
     )
-    return model
-
-
-def save_model(model, model_path=config.model_path):
-
-    joblib.dump(model, model_path)
-
-    metadata = {
-        "version": config.version,
-        "created_at": datetime.now(timezone.utc).isoformat(),
-    }
-
-    with open(config.metadata, "w", encoding="utf-8") as f:
-        json.dump(metadata, f, indent=4, ensure_ascii=False)
-
-
-def main():
-
-    X, y = load_data(config.dataset)
-
-    X_train, X_test, y_train, y_test = train_test_split(
-        X,
-        y,
-        test_size=config.test_size,
-        random_state=config.random_state,
-        stratify=y
-    )
-
-    cat_features = FEATURE_SCHEMA.categorical
-
-    train_pool = Pool(
-        X_train,
-        y_train,
-        cat_features=cat_features
-    )
-
-    test_pool = Pool(
-        X_test,
-        y_test,
-        cat_features=cat_features
-    )
-
-    model = build_model()
 
     model.fit(
-        train_pool,
-        eval_set=test_pool,
-        early_stopping_rounds=config.early_stopping_rounds,
-        use_best_model=True
+        X_train,
+        y_train,
+        cat_features=cat_features,
+        eval_set=(X_val, y_val),
+        early_stopping_rounds=100
     )
 
-    y_pred_proba = model.predict_proba(X_test)[:, 1]
-    
-    auc = roc_auc_score(y_test, y_pred_proba)
-    logloss = log_loss(y_test, y_pred_proba)
+    # Предсказание
+    y_pred = model.predict(X_val)
 
-    print(f"AUC: {auc:.4f}")
-    print(f"LogLoss: {logloss:.4f}")
+    # Метрики
+    rmse = np.sqrt(mean_squared_error(y_val, y_pred))
+    mae = mean_absolute_error(y_val, y_pred)
+    r2 = r2_score(y_val, y_pred)
 
-    save_model(model)
+    print(f"RMSE: {rmse:.6f}")
+    print(f"MAE:  {mae:.6f}")
+    print(f"R2:   {r2:.4f}")
 
-if __name__ == "__main__":
-    main()
+    rmse_scores.append(rmse)
+    mae_scores.append(mae)
+    r2_scores.append(r2)
+
+    fold += 1
+
+# ==========================================
+# 5. Итоговые результаты CV
+# ==========================================
+print("\n========== Итог по 5-Fold ==========")
+print(f"Средний RMSE: {np.mean(rmse_scores):.6f}")
+print(f"Средний MAE:  {np.mean(mae_scores):.6f}")
+print(f"Средний R2:   {np.mean(r2_scores):.4f}")
+
+# ==========================================
+# 6. Финальное обучение на всех данных
+# ==========================================
+final_model = CatBoostRegressor(
+    iterations=1000,
+    depth=6,
+    learning_rate=0.05,
+    loss_function="RMSE",
+    random_seed=42,
+    verbose=100
+)
+
+final_model.fit(
+    X,
+    y,
+    cat_features=cat_features
+)
+
+# ==========================================
+# 7. Сохранение модели
+# ==========================================
+final_model.save_model("catboost_ctr_model.pkl")
+
+print("\nМодель сохранена как catboost_ctr_model.pkl")
