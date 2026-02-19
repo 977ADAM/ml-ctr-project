@@ -1,15 +1,10 @@
-import os
 import json
-
 from datetime import datetime, timezone
-from xml.parsers.expat import model
 import joblib
-import numpy as np
 import pandas as pd
-from catboost import CatBoostRegressor, Pool
-from sklearn.base import accuracy_score
+from catboost import CatBoostClassifier, Pool
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import classification_report, mean_absolute_error, mean_squared_error, r2_score
+from sklearn.metrics import roc_auc_score, log_loss
 
 try:
     from .config import config
@@ -24,14 +19,12 @@ def load_data(path, target_col=config.target) -> str:
 
     y = df[target_col].astype(int).values
 
-    df = df.drop(columns=[target_col])
-
-    X = df
+    X = df.drop(columns=[target_col])
 
     return X, y
 
 def build_model():
-    model = CatBoostRegressor(
+    model = CatBoostClassifier(
         iterations=config.iterations,
         depth=config.depth,
         learning_rate=config.learning_rate,
@@ -40,7 +33,6 @@ def build_model():
         random_seed=config.random_seed,
         verbose=config.verbose
     )
-
     return model
 
 
@@ -62,36 +54,45 @@ def main():
     X, y = load_data(config.dataset)
 
     X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=config.test_size, random_state=config.random_state
+        X,
+        y,
+        test_size=config.test_size,
+        random_state=config.random_state,
+        stratify=y
+    )
+
+    cat_features = FEATURE_SCHEMA.categorical
+
+    train_pool = Pool(
+        X_train,
+        y_train,
+        cat_features=cat_features
+    )
+
+    test_pool = Pool(
+        X_test,
+        y_test,
+        cat_features=cat_features
     )
 
     model = build_model()
 
-    model.fit(X_train, y_train)
-    y_pred = model.predict(X_test)
-    acc = accuracy_score(y_test, y_pred)
-    
-
-    print("Mean Absolute Error:", mean_absolute_error(y_test, y_pred))
-    print("Mean Squared Error:", mean_squared_error(y_test, y_pred))
-    print("R² Score:", r2_score(y_test, y_pred))
-
-
-
-    save_model(
-        model=model,
-        metrics={
-            "accuracy": acc,
-        },
-        params={
-            "random_state": config.random_state,
-            "test_size": config.test_size,
-        },
-        feature_schema = {
-
-        },
-        version=config.version,
+    model.fit(
+        train_pool,
+        eval_set=test_pool,
+        early_stopping_rounds=config.early_stopping_rounds,
+        use_best_model=True
     )
+
+    y_pred_proba = model.predict_proba(X_test)[:, 1]
+    
+    auc = roc_auc_score(y_test, y_pred_proba)
+    logloss = log_loss(y_test, y_pred_proba)
+
+    print(f"AUC: {auc:.4f}")
+    print(f"LogLoss: {logloss:.4f}")
+
+    save_model(model)
 
 if __name__ == "__main__":
     main()
