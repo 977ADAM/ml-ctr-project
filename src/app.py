@@ -7,7 +7,7 @@ import pandas as pd
 import streamlit as st
 from catboost import CatBoostRegressor
 
-MODEL_PATH = Path("models/ctr_model.cbm")
+MODEL_PATH = Path("models/model.cbm")
 DEFAULT_DATA_PATH = Path("data/dataset.csv")
 FEATURE_COLUMNS = ["ID кампании", "ID баннера", "Тип баннера", "Тип устройства", "Показы"]
 
@@ -103,13 +103,13 @@ def main() -> None:
                 ]
             )
 
-            pred_ctr = float(np.clip(model.predict(input_df)[0], 0.0, 1.0))
-            business = make_decision(pred_ctr, cost_per_impression, click_value)
-            predicted_clicks = pred_ctr * int(shows)
+            pred_clicks = model.predict(input_df)[0]
+            predicted_ctr = pred_clicks / shows * 100
+            business = make_decision(predicted_ctr, cost_per_impression, click_value)
 
             m1, m2, m3 = st.columns(3)
-            m1.metric("Вероятность клика (CTR)", f"{pred_ctr:.4%}")
-            m2.metric("Ожидаемые клики", f"{predicted_clicks:.2f}")
+            m1.metric("Вероятность клика (CTR)", f"{predicted_ctr:.4%}")
+            m2.metric("Ожидаемые клики", f"{pred_clicks:.2f}")
             m3.metric("Макс CPM", f"{business['max_cpm']:.4f}")
 
             st.write(f"Ожидаемая ценность показа: **{business['expected_value']:.6f}**")
