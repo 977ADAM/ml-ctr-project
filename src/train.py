@@ -78,6 +78,7 @@ def main() -> None:
         sample_weight = df["Показы"].clip(lower=1).to_numpy(dtype=float)
 
     split_kwargs = {"test_size": 0.2, "random_state": args.random_state}
+    
     X_train, X_test, y_train, y_test, w_train, w_test = train_test_split(
         X,
         y,
