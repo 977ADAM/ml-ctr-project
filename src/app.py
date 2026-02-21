@@ -104,7 +104,7 @@ def main() -> None:
             )
 
             pred_clicks = model.predict(input_df)[0]
-            predicted_ctr = pred_clicks / shows * 100
+            predicted_ctr = pred_clicks / shows
             business = make_decision(predicted_ctr, cost_per_impression, click_value)
 
             m1, m2, m3 = st.columns(3)
