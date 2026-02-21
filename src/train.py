@@ -1,7 +1,5 @@
 from __future__ import annotations
-import argparse
 import json
-from pathlib import Path
 from typing import Any
 import numpy as np
 import pandas as pd
@@ -13,35 +11,34 @@ from sklearn.metrics import (
 )
 from sklearn.model_selection import train_test_split
 
-
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Train a click probability (CTR) model on dataset.csv"
-    )
-    parser.add_argument("--data", type=Path, default=Path("data/dataset.csv"))
-    parser.add_argument("--model-dir", type=Path, default=Path("models"))
-    parser.add_argument("--model-name", type=str, default="ctr_model.cbm")
-    parser.add_argument("--target", type=str, default="CTR")
-    parser.add_argument("--random-state", type=int, default=42)
-    return parser.parse_args()
+try:
+    from .cli_args import CTRTrainCLI
+except ImportError:
+    from cli_args import CTRTrainCLI
 
 
 def prepare_target(df: pd.DataFrame, target_col: str) -> tuple[pd.DataFrame, pd.Series]:
+    
     if target_col in df.columns:
 
         y = df[target_col].astype(float)
-        features_df = df.drop(columns=[target_col])
-        return features_df, y
+
+        X = df.drop(columns=[target_col])
+
+        return X, y
 
     if {"Переходы", "Показы"}.issubset(df.columns):
 
         safe_shows = df["Показы"].replace(0, np.nan)
+
         y = (df["Переходы"] / safe_shows).fillna(0.0).astype(float)
-        features_df = df.copy()
-        return features_df, y
+
+        X = df.copy()
+
+        return X, y
 
     raise ValueError(
-        f"Target '{target_col}' not found and cannot infer CTR from 'Переходы'/'Показы'."
+        f"Цель '{target_col}' не найдено и невозможно сделать вывод CTR от 'Переходы'/'Показы'."
     )
 
 
@@ -62,12 +59,15 @@ def weighted_metrics(y_true: np.ndarray, y_pred: np.ndarray, w: np.ndarray | Non
 
 
 def main() -> None:
-    args = parse_args()
+    args = CTRTrainCLI().parse()
+
     df = pd.read_csv(args.data)
 
-    # Remove target leakage columns from features.
+    # Удалите столбцы с утечками в целевом объекте.
     X, y = prepare_target(df, args.target)
+
     leakage_cols = [c for c in ["CTR", "Переходы"] if c in X.columns]
+    
     if leakage_cols:
         X = X.drop(columns=leakage_cols)
 

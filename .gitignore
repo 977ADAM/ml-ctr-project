@@ -6,10 +6,15 @@ venv
 *.sqlite
 *.pyc
 __pycache__/
+catboost_info/
+models/
 *.vscode/
 *.env
 *.env.*
 *.bak
 *.tmp
 *.pkl
+*.cbm
+*.txt
+
 *.pth
