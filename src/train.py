@@ -105,7 +105,10 @@ def cv_mae_for_params(
         fold_mae_scores.append(float(mean_absolute_error(y_valid, preds)))
 
         best_iter = model.get_best_iteration()
-        fold_best_iterations.append(int(best_iter if best_iter >= 0 else model.tree_count_))
+        if best_iter is None or best_iter < 0:
+            fold_best_iterations.append(int(model.tree_count_))
+        else:
+            fold_best_iterations.append(int(best_iter))
 
     return float(np.mean(fold_mae_scores)), fold_best_iterations
 
@@ -169,7 +172,9 @@ def train_final_model(
 
 def get_model_best_iteration(model: CatBoostRegressor) -> int:
     best_iter = model.get_best_iteration()
-    return int(best_iter if best_iter >= 0 else model.tree_count_)
+    if best_iter is None or best_iter < 0:
+        return int(model.tree_count_)
+    return int(best_iter)
 
 
 def save_artifacts(
