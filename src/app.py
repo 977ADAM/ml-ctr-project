@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import numpy as np
@@ -8,8 +9,15 @@ import streamlit as st
 from catboost import CatBoostRegressor
 
 MODEL_PATH = Path("models/model.cbm")
+MODEL_META_PATH = Path("models/model_meta.json")
 DEFAULT_DATA_PATH = Path("data/dataset.csv")
-FEATURE_COLUMNS = ["ID кампании", "ID баннера", "Тип баннера", "Тип устройства", "Показы"]
+DEFAULT_FEATURE_COLUMNS = [
+    "ID кампании",
+    "ID баннера",
+    "Тип баннера",
+    "Тип устройства",
+    "Показы",
+]
 
 
 @st.cache_resource
@@ -24,6 +32,14 @@ def load_reference_data(data_path: Path) -> pd.DataFrame:
     if data_path.exists():
         return pd.read_csv(data_path)
     return pd.DataFrame()
+
+
+@st.cache_data
+def load_model_metadata(meta_path: Path) -> dict:
+    if not meta_path.exists():
+        return {}
+    with meta_path.open("r", encoding="utf-8") as meta_file:
+        return json.load(meta_file)
 
 
 def make_decision(pred_ctr: float, cost_per_impression: float, click_value: float) -> dict[str, float | str]:
@@ -49,6 +65,8 @@ def main() -> None:
         st.stop()
 
     model = load_model(MODEL_PATH)
+    meta = load_model_metadata(MODEL_META_PATH)
+    feature_columns = meta.get("feature_columns", DEFAULT_FEATURE_COLUMNS)
     ref_df = load_reference_data(DEFAULT_DATA_PATH)
 
     st.sidebar.header("Экономика показа")
@@ -61,8 +79,14 @@ def main() -> None:
     st.sidebar.caption(
         "Правило: покупаем, если `predicted_ctr * ценность_клика >= стоимость_показа`."
     )
+    if meta.get("metrics_valid"):
+        metrics = meta["metrics_valid"]
+        st.sidebar.markdown("### Метрики модели")
+        st.sidebar.write(f"MAE: {metrics.get('mae', 0):.6f}")
+        st.sidebar.write(f"RMSE: {metrics.get('rmse', 0):.6f}")
+        st.sidebar.write(f"R2: {metrics.get('r2', 0):.6f}")
 
-    tab_single = st.tabs(["Один показ"])
+    [tab_single] = st.tabs(["Один показ"])
 
     with tab_single:
         st.subheader("Ручной прогноз")
@@ -95,6 +119,13 @@ def main() -> None:
                     }
                 ]
             )
+            missing_features = [col for col in feature_columns if col not in input_df.columns]
+            if missing_features:
+                st.error(
+                    f"В metadata модели не хватает признаков для прогноза: {missing_features}"
+                )
+                st.stop()
+            input_df = input_df[feature_columns]
 
             pred_ctr = model.predict(input_df)[0]
             pred_ctr = max(0, min(1, pred_ctr))
