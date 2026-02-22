@@ -29,7 +29,7 @@ def validate_input_frame(df: pd.DataFrame) -> None:
         raise ValueError(f"Missing columns in dataset: {missing_cols}")
 
 
-def load_raw_data(data_path: Path) -> pd.DataFrame:
+def load_raw_data(data_path) -> pd.DataFrame:
     if not data_path.exists():
         raise FileNotFoundError(f"Dataset not found: {data_path}")
     df = pd.read_csv(data_path)
