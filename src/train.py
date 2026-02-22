@@ -2,13 +2,15 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
+from typing import Any
 
-import numpy as np
-import pandas as pd
 import mlflow
+import numpy as np
+import optuna
+import pandas as pd
 from catboost import CatBoostRegressor
-from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
-from sklearn.model_selection import train_test_split
+from sklearn.metrics import mean_absolute_error
+from sklearn.model_selection import GroupKFold
 
 from config import TrainConfig, get_train_config
 
@@ -21,6 +23,8 @@ FEATURE_COLUMNS = [
 ]
 CAT_COLUMNS = ["ID кампании", "ID баннера", "Тип баннера", "Тип устройства"]
 REQUIRED_COLUMNS = FEATURE_COLUMNS + ["Переходы"]
+N_SPLITS = 5
+N_TRIALS = 40
 
 
 def validate_input_frame(df: pd.DataFrame) -> None:
@@ -37,7 +41,9 @@ def load_raw_data(data_path) -> pd.DataFrame:
     return df
 
 
-def build_training_dataset(raw_df: pd.DataFrame) -> tuple[pd.DataFrame, pd.Series]:
+def build_training_dataset(
+    raw_df: pd.DataFrame,
+) -> tuple[pd.DataFrame, pd.Series, pd.Series]:
     df = raw_df.copy()
     df = df[df["Показы"] > 0].copy()
     if df.empty:
@@ -50,80 +56,120 @@ def build_training_dataset(raw_df: pd.DataFrame) -> tuple[pd.DataFrame, pd.Serie
 
     X = df[FEATURE_COLUMNS].copy()
     y = pd.Series(target, index=df.index, name="click_probability")
-    return X, y
+    groups = df["ID баннера"].copy()
+    return X, y, groups
 
 
-def make_stratified_target(y: pd.Series) -> pd.Series | None:
-    if y.nunique() < 2:
-        return None
-    try:
-        bins = pd.qcut(y, q=min(10, y.nunique()), duplicates="drop")
-    except ValueError:
-        return None
-    if bins.nunique() < 2:
-        return None
-    return bins
+def suggest_catboost_params(trial: optuna.Trial, random_state: int) -> dict[str, Any]:
+    return {
+        "iterations": trial.suggest_int("iterations", 500, 3000),
+        "learning_rate": trial.suggest_float("learning_rate", 1e-3, 0.3, log=True),
+        "depth": trial.suggest_int("depth", 4, 10),
+        "l2_leaf_reg": trial.suggest_float("l2_leaf_reg", 1.0, 20.0),
+        "cat_features": CAT_COLUMNS,
+        "loss_function": "MAE",
+        "eval_metric": "MAE",
+        "random_seed": random_state,
+        "verbose": False,
+    }
 
 
-def split_data(
-    X: pd.DataFrame, y: pd.Series, test_size: float, random_state: int
-) -> tuple[pd.DataFrame, pd.DataFrame, pd.Series, pd.Series]:
-    stratify_target = make_stratified_target(y)
-    return train_test_split(
-        X,
-        y,
-        test_size=test_size,
-        random_state=random_state,
-        stratify=stratify_target,
+def cv_mae_for_params(
+    *,
+    X: pd.DataFrame,
+    y: pd.Series,
+    groups: pd.Series,
+    params: dict[str, Any],
+) -> tuple[float, list[int]]:
+    cv = GroupKFold(n_splits=N_SPLITS)
+    fold_mae_scores: list[float] = []
+    fold_best_iterations: list[int] = []
+
+    for train_idx, valid_idx in cv.split(X, y, groups=groups):
+        X_train = X.iloc[train_idx]
+        y_train = y.iloc[train_idx]
+        X_valid = X.iloc[valid_idx]
+        y_valid = y.iloc[valid_idx]
+
+        model = CatBoostRegressor(**params)
+        model.fit(
+            X_train,
+            y_train,
+            eval_set=(X_valid, y_valid),
+            early_stopping_rounds=200,
+            use_best_model=True,
+            verbose=False,
+        )
+
+        preds = np.clip(model.predict(X_valid), 0.0, 1.0)
+        fold_mae_scores.append(float(mean_absolute_error(y_valid, preds)))
+
+        best_iter = model.get_best_iteration()
+        fold_best_iterations.append(int(best_iter if best_iter >= 0 else model.tree_count_))
+
+    return float(np.mean(fold_mae_scores)), fold_best_iterations
+
+
+def tune_hyperparameters(
+    *,
+    X: pd.DataFrame,
+    y: pd.Series,
+    groups: pd.Series,
+    random_state: int,
+) -> tuple[dict[str, Any], float]:
+    best_fold_iterations: list[int] = []
+
+    def objective(trial: optuna.Trial) -> float:
+        nonlocal best_fold_iterations
+        params = suggest_catboost_params(trial, random_state=random_state)
+        mean_cv_mae, fold_iterations = cv_mae_for_params(
+            X=X,
+            y=y,
+            groups=groups,
+            params=params,
+        )
+        trial.set_user_attr("fold_best_iterations", fold_iterations)
+        best_fold_iterations = fold_iterations
+        return mean_cv_mae
+
+    sampler = optuna.samplers.TPESampler(seed=random_state)
+    study = optuna.create_study(direction="minimize", sampler=sampler)
+    study.optimize(objective, n_trials=N_TRIALS)
+
+    best_params = dict(study.best_trial.params)
+    best_params["iterations"] = int(best_params["iterations"])
+    best_params["depth"] = int(best_params["depth"])
+
+    fold_iterations = study.best_trial.user_attrs.get(
+        "fold_best_iterations", best_fold_iterations
     )
+    if fold_iterations:
+        best_params["iterations"] = int(np.mean(fold_iterations))
+
+    return best_params, float(study.best_value)
 
 
-def train_model(
-    X_train: pd.DataFrame,
-    y_train: pd.Series,
-    X_valid: pd.DataFrame,
-    y_valid: pd.Series,
+def train_final_model(
+    X: pd.DataFrame,
+    y: pd.Series,
+    best_params: dict[str, Any],
     random_state: int,
 ) -> CatBoostRegressor:
     model = CatBoostRegressor(
-        iterations=2000,
-        learning_rate=0.05,
-        depth=6,
+        **best_params,
         cat_features=CAT_COLUMNS,
         loss_function="MAE",
         eval_metric="MAE",
         random_seed=random_state,
         verbose=False,
     )
-    model.fit(
-        X_train,
-        y_train,
-        eval_set=(X_valid, y_valid),
-        early_stopping_rounds=200,
-        use_best_model=True,
-        verbose=200,
-    )
+    model.fit(X, y, verbose=200)
     return model
 
 
-def evaluate_model(
-    model: CatBoostRegressor,
-    X_valid: pd.DataFrame,
-    y_valid: pd.Series,
-    train_target_mean: float,
-) -> dict[str, float]:
-    preds = np.clip(model.predict(X_valid), 0.0, 1.0)
-    mae = mean_absolute_error(y_valid, preds)
-    rmse = float(np.sqrt(mean_squared_error(y_valid, preds)))
-    r2 = r2_score(y_valid, preds)
-    baseline_preds = np.full(len(y_valid), train_target_mean)
-    baseline_mae = mean_absolute_error(y_valid, baseline_preds)
-    return {
-        "mae": float(mae),
-        "rmse": rmse,
-        "r2": float(r2),
-        "baseline_mae": float(baseline_mae),
-    }
+def get_model_best_iteration(model: CatBoostRegressor) -> int:
+    best_iter = model.get_best_iteration()
+    return int(best_iter if best_iter >= 0 else model.tree_count_)
 
 
 def save_artifacts(
@@ -132,6 +178,7 @@ def save_artifacts(
     metrics: dict[str, float],
     n_train_rows: int,
     n_valid_rows: int,
+    best_params: dict[str, Any],
     mlflow_run_id: str,
     save_model_file: bool = True,
 ) -> None:
@@ -148,7 +195,8 @@ def save_artifacts(
         "target_name": "click_probability",
         "rows_train": n_train_rows,
         "rows_valid": n_valid_rows,
-        "best_iteration": int(model.get_best_iteration()),
+        "best_iteration": get_model_best_iteration(model),
+        "best_params": best_params,
         "metrics_valid": metrics,
         "random_state": config.random_state,
         "mlflow_run_id": mlflow_run_id,
@@ -166,6 +214,7 @@ def log_to_mlflow(
     config: TrainConfig,
     model: CatBoostRegressor,
     metrics: dict[str, float],
+    best_params: dict[str, Any],
     n_train_rows: int,
     n_valid_rows: int,
 ) -> str:
@@ -175,21 +224,14 @@ def log_to_mlflow(
     with mlflow.start_run(run_name=config.mlflow_run_name) as run:
         run_id = run.info.run_id
 
-        model_params = model.get_all_params()
-        for key in (
-            "iterations",
-            "learning_rate",
-            "depth",
-            "loss_function",
-            "eval_metric",
-            "random_seed",
-            "early_stopping_rounds",
-        ):
-            if key in model_params:
-                mlflow.log_param(f"model_{key}", model_params[key])
+        mlflow.log_param("model_iterations", best_params["iterations"])
+        mlflow.log_param("model_learning_rate", best_params["learning_rate"])
+        mlflow.log_param("model_depth", best_params["depth"])
+        mlflow.log_param("model_l2_leaf_reg", best_params["l2_leaf_reg"])
 
         mlflow.log_param("data_path", str(config.data_path))
-        mlflow.log_param("test_size", config.test_size)
+        mlflow.log_param("cv_folds", N_SPLITS)
+        mlflow.log_param("optuna_trials", N_TRIALS)
         mlflow.log_param("random_state", config.random_state)
         mlflow.log_param("n_train_rows", n_train_rows)
         mlflow.log_param("n_valid_rows", n_valid_rows)
@@ -198,7 +240,7 @@ def log_to_mlflow(
 
         for metric_name, metric_value in metrics.items():
             mlflow.log_metric(metric_name, float(metric_value))
-        mlflow.log_metric("best_iteration", float(model.get_best_iteration()))
+        mlflow.log_metric("best_iteration", float(get_model_best_iteration(model)))
 
         mlflow.log_artifact(str(config.model_path), artifact_path="artifacts")
         mlflow.log_artifact(str(config.meta_path), artifact_path="artifacts")
@@ -215,47 +257,53 @@ def main() -> None:
     config = get_train_config()
 
     raw_df = load_raw_data(config.data_path)
-    X, y = build_training_dataset(raw_df)
-    X_train, X_valid, y_train, y_valid = split_data(
+    X, y, groups = build_training_dataset(raw_df)
+
+    best_params, cv_mae = tune_hyperparameters(
         X=X,
         y=y,
-        test_size=config.test_size,
+        groups=groups,
         random_state=config.random_state,
     )
-    model = train_model(
-        X_train=X_train,
-        y_train=y_train,
-        X_valid=X_valid,
-        y_valid=y_valid,
+
+    model = train_final_model(
+        X=X,
+        y=y,
+        best_params=best_params,
         random_state=config.random_state,
     )
-    metrics = evaluate_model(
-        model=model,
-        X_valid=X_valid,
-        y_valid=y_valid,
-        train_target_mean=float(y_train.mean()),
-    )
+
+    metrics = {
+        "cv_mae": float(cv_mae),
+        "mae": float(cv_mae),
+    }
+
     save_artifacts(
         model=model,
         config=config,
         metrics=metrics,
-        n_train_rows=len(X_train),
-        n_valid_rows=len(X_valid),
+        n_train_rows=len(X),
+        n_valid_rows=0,
+        best_params=best_params,
         mlflow_run_id="pending",
     )
+
     run_id = log_to_mlflow(
         config=config,
         model=model,
         metrics=metrics,
-        n_train_rows=len(X_train),
-        n_valid_rows=len(X_valid),
+        best_params=best_params,
+        n_train_rows=len(X),
+        n_valid_rows=0,
     )
+
     save_artifacts(
         model=model,
         config=config,
         metrics=metrics,
-        n_train_rows=len(X_train),
-        n_valid_rows=len(X_valid),
+        n_train_rows=len(X),
+        n_valid_rows=0,
+        best_params=best_params,
         mlflow_run_id=run_id,
         save_model_file=False,
     )
@@ -267,12 +315,9 @@ def main() -> None:
         f"MLflow: tracking_uri={config.mlflow_tracking_uri}, "
         f"experiment={config.mlflow_experiment}, run_id={run_id}"
     )
-    print(
-        "Validation metrics: "
-        f"MAE={metrics['mae']:.6f}, RMSE={metrics['rmse']:.6f}, "
-        f"R2={metrics['r2']:.6f}, baseline_MAE={metrics['baseline_mae']:.6f}"
-    )
-    print(f"Best iteration: {model.get_best_iteration()}")
+    print(f"Best params: {best_params}")
+    print(f"CV MAE (5-fold GroupKFold): {cv_mae:.6f}")
+    print(f"Best iteration: {get_model_best_iteration(model)}")
 
 
 if __name__ == "__main__":
