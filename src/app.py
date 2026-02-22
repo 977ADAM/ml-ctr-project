@@ -38,13 +38,6 @@ def make_decision(pred_ctr: float, cost_per_impression: float, click_value: floa
     }
 
 
-def ensure_feature_frame(df: pd.DataFrame) -> pd.DataFrame:
-    missing = [c for c in FEATURE_COLUMNS if c not in df.columns]
-    if missing:
-        raise ValueError(f"В файле нет нужных колонок: {missing}")
-    return df[FEATURE_COLUMNS].copy()
-
-
 def main() -> None:
     st.set_page_config(page_title="CTR Decision App", layout="wide")
     st.title("CTR Model: прогноз и решение о покупке показа")
@@ -118,43 +111,6 @@ def main() -> None:
                 st.success("Решение: Покупать показ")
             else:
                 st.error("Решение: Не покупать")
-
-    with tab_batch:
-        st.subheader("Пакетный расчет")
-        st.caption(
-            "Загрузите CSV с колонками: ID кампании, ID баннера, Тип баннера, Тип устройства, Показы"
-        )
-        uploaded = st.file_uploader("CSV файл", type=["csv"])
-
-        if uploaded is not None:
-            try:
-                batch_df = pd.read_csv(uploaded)
-                X = ensure_feature_frame(batch_df)
-
-                preds = np.clip(model.predict(X), 0.0, 1.0)
-                out_df = batch_df.copy()
-                out_df["predicted_ctr"] = preds
-                out_df["predicted_clicks"] = (out_df["Показы"] * out_df["predicted_ctr"]).round(2)
-                out_df["expected_value_per_impression"] = out_df["predicted_ctr"] * click_value
-                out_df["impression_cost"] = cost_per_impression
-                out_df["decision"] = np.where(
-                    out_df["expected_value_per_impression"] >= out_df["impression_cost"],
-                    "Покупать показ",
-                    "Не покупать",
-                )
-
-                st.dataframe(out_df.head(50), use_container_width=True)
-
-                csv_bytes = out_df.to_csv(index=False).encode("utf-8")
-                st.download_button(
-                    label="Скачать результат CSV",
-                    data=csv_bytes,
-                    file_name="scored_impressions.csv",
-                    mime="text/csv",
-                )
-            except Exception as exc:
-                st.error(str(exc))
-
 
 if __name__ == "__main__":
     main()
