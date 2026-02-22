@@ -6,7 +6,7 @@ from sklearn.metrics import (
     r2_score
 )
 
-df = pd.read_csv('../data/dataset.csv')
+df = pd.read_csv('data/dataset.csv')
 
 target_col = "CTR"
 leakage_cols = "Переходы"
@@ -52,5 +52,6 @@ r2 = r2_score(y_test, preds)
 
 print(f"mae: {mae}")
 print(f"r2: {r2}")
+print(model.get_best_iteration())
 
 model.save_model("models/model.cbm")
