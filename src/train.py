@@ -8,8 +8,8 @@ from sklearn.metrics import (
 
 df = pd.read_csv('../data/dataset.csv')
 
-target_col = "Переходы"
-leakage_cols = "CTR"
+target_col = "CTR"
+leakage_cols = "Переходы"
 
 y = df[target_col]
 
@@ -35,7 +35,14 @@ model = CatBoostRegressor(
     verbose=False,
 )
 
-model.fit(X_train, y_train)
+model.fit(
+    X_train,
+    y_train,
+    eval_set=(X_test, y_test),
+    early_stopping_rounds=200,
+    use_best_model=True,
+    verbose=200
+)
 
 preds = model.predict(X_test)
 
@@ -46,4 +53,4 @@ r2 = r2_score(y_test, preds)
 print(f"mae: {mae}")
 print(f"r2: {r2}")
 
-model.save_model("model.cbm")
+model.save_model("models/model.cbm")

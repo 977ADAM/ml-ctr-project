@@ -62,7 +62,7 @@ def main() -> None:
         "Правило: покупаем, если `predicted_ctr * ценность_клика >= стоимость_показа`."
     )
 
-    tab_single, tab_batch = st.tabs(["Один показ", "Пакетный расчет CSV"])
+    tab_single = st.tabs(["Один показ"])
 
     with tab_single:
         st.subheader("Ручной прогноз")
@@ -96,13 +96,14 @@ def main() -> None:
                 ]
             )
 
-            pred_clicks = model.predict(input_df)[0]
-            predicted_ctr = pred_clicks / shows
-            business = make_decision(predicted_ctr, cost_per_impression, click_value)
+            pred_ctr = model.predict(input_df)[0]
+            pred_ctr = max(0, min(1, pred_ctr))
+            predicted_clicks = shows * pred_ctr
+            business = make_decision(pred_ctr, cost_per_impression, click_value)
 
             m1, m2, m3 = st.columns(3)
-            m1.metric("Вероятность клика (CTR)", f"{predicted_ctr:.4%}")
-            m2.metric("Ожидаемые клики", f"{pred_clicks:.2f}")
+            m1.metric("Вероятность клика (CTR)", f"{pred_ctr:.4%}")
+            m2.metric("Ожидаемые клики", f"{predicted_clicks:.2f}")
             m3.metric("Макс CPM", f"{business['max_cpm']:.4f}")
 
             st.write(f"Ожидаемая ценность показа: **{business['expected_value']:.6f}**")
