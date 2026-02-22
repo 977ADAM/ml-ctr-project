@@ -80,11 +80,16 @@ def main() -> None:
         "Правило: покупаем, если `predicted_ctr * ценность_клика >= стоимость_показа`."
     )
     if meta.get("metrics_valid"):
-        metrics = meta["metrics_valid"]
+        m = meta["metrics_valid"]
         st.sidebar.markdown("### Метрики модели")
-        st.sidebar.write(f"MAE: {metrics.get('mae', 0):.6f}")
-        st.sidebar.write(f"RMSE: {metrics.get('rmse', 0):.6f}")
-        st.sidebar.write(f"R2: {metrics.get('r2', 0):.6f}")
+        if "cv_mae" in m:
+            st.sidebar.write(f"CV MAE: {m['cv_mae']:.6f}")
+        if "mae" in m:
+            st.sidebar.write(f"MAE: {m['mae']:.6f}")
+        if "rmse" in m:
+            st.sidebar.write(f"RMSE: {m['rmse']:.6f}")
+        if "r2" in m:
+            st.sidebar.write(f"R2: {m['r2']:.6f}")
 
     [tab_single] = st.tabs(["Один показ"])
 
