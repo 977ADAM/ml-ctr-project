@@ -26,16 +26,36 @@
 venv/bin/python src/train.py
 ```
 
-Опционально:
+Настройки обучения и MLflow задаются в `src/config.py` (класс `TrainConfig`), например:
 
 ```bash
-venv/bin/python src/train.py \
-  --data-path data/dataset.csv \
-  --model-path models/model.cbm \
-  --meta-path models/model_meta.json \
-  --test-size 0.2 \
-  --random-state 42
+mlflow_tracking_uri = "sqlite:///mlflow.db"
+mlflow_experiment = "ctr-click-probability"
+mlflow_run_name = "catboost_ctr"
+mlflow_registered_model_name = "ctr_click_probability_model"
 ```
+
+## MLflow versioning моделей
+
+Что логируется в MLflow:
+- параметры обучения и фичи;
+- метрики валидации (`mae`, `rmse`, `r2`, `baseline_mae`);
+- артефакты: `models/model.cbm` и `models/model_meta.json`;
+- модель в Model Registry (новая версия в `ctr_click_probability_model`).
+
+Запуск с локальной БД (рекомендуется):
+
+```bash
+venv/bin/python src/train.py
+```
+
+Запуск MLflow UI:
+
+```bash
+venv/bin/mlflow ui --backend-store-uri sqlite:///mlflow.db --port 5000
+```
+
+После этого откройте `http://127.0.0.1:5000`.
 
 ## Запуск приложения для прогноза
 

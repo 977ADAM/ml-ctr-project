@@ -1,16 +1,16 @@
 from __future__ import annotations
 
-import argparse
 import json
-from dataclasses import dataclass
 from datetime import datetime, timezone
-from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import mlflow
 from catboost import CatBoostRegressor
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from sklearn.model_selection import train_test_split
+
+from config import TrainConfig, get_train_config
 
 FEATURE_COLUMNS = [
     "ID кампании",
@@ -21,35 +21,6 @@ FEATURE_COLUMNS = [
 ]
 CAT_COLUMNS = ["ID кампании", "ID баннера", "Тип баннера", "Тип устройства"]
 REQUIRED_COLUMNS = FEATURE_COLUMNS + ["Переходы"]
-
-
-@dataclass
-class TrainConfig:
-    data_path: Path
-    model_path: Path
-    meta_path: Path
-    test_size: float
-    random_state: int
-
-
-def parse_args() -> TrainConfig:
-    parser = argparse.ArgumentParser(
-        description="Training pipeline for CTR click probability model."
-    )
-    parser.add_argument("--data-path", type=Path, default=Path("data/dataset.csv"))
-    parser.add_argument("--model-path", type=Path, default=Path("models/model.cbm"))
-    parser.add_argument("--meta-path", type=Path, default=Path("models/model_meta.json"))
-    parser.add_argument("--test-size", type=float, default=0.2)
-    parser.add_argument("--random-state", type=int, default=42)
-    args = parser.parse_args()
-
-    return TrainConfig(
-        data_path=args.data_path,
-        model_path=args.model_path,
-        meta_path=args.meta_path,
-        test_size=args.test_size,
-        random_state=args.random_state,
-    )
 
 
 def validate_input_frame(df: pd.DataFrame) -> None:
@@ -161,9 +132,12 @@ def save_artifacts(
     metrics: dict[str, float],
     n_train_rows: int,
     n_valid_rows: int,
+    mlflow_run_id: str,
+    save_model_file: bool = True,
 ) -> None:
-    config.model_path.parent.mkdir(parents=True, exist_ok=True)
-    model.save_model(str(config.model_path))
+    if save_model_file:
+        config.model_path.parent.mkdir(parents=True, exist_ok=True)
+        model.save_model(str(config.model_path))
 
     metadata = {
         "created_at_utc": datetime.now(timezone.utc).isoformat(),
@@ -177,14 +151,68 @@ def save_artifacts(
         "best_iteration": int(model.get_best_iteration()),
         "metrics_valid": metrics,
         "random_state": config.random_state,
+        "mlflow_run_id": mlflow_run_id,
+        "mlflow_tracking_uri": config.mlflow_tracking_uri,
+        "mlflow_experiment": config.mlflow_experiment,
+        "mlflow_registered_model_name": config.mlflow_registered_model_name,
     }
     config.meta_path.parent.mkdir(parents=True, exist_ok=True)
     with config.meta_path.open("w", encoding="utf-8") as meta_file:
         json.dump(metadata, meta_file, ensure_ascii=False, indent=2)
 
 
+def log_to_mlflow(
+    *,
+    config: TrainConfig,
+    model: CatBoostRegressor,
+    metrics: dict[str, float],
+    n_train_rows: int,
+    n_valid_rows: int,
+) -> str:
+    mlflow.set_tracking_uri(config.mlflow_tracking_uri)
+    mlflow.set_experiment(config.mlflow_experiment)
+
+    with mlflow.start_run(run_name=config.mlflow_run_name) as run:
+        run_id = run.info.run_id
+
+        model_params = model.get_all_params()
+        for key in (
+            "iterations",
+            "learning_rate",
+            "depth",
+            "loss_function",
+            "eval_metric",
+            "random_seed",
+            "early_stopping_rounds",
+        ):
+            if key in model_params:
+                mlflow.log_param(f"model_{key}", model_params[key])
+
+        mlflow.log_param("data_path", str(config.data_path))
+        mlflow.log_param("test_size", config.test_size)
+        mlflow.log_param("random_state", config.random_state)
+        mlflow.log_param("n_train_rows", n_train_rows)
+        mlflow.log_param("n_valid_rows", n_valid_rows)
+        mlflow.log_param("feature_columns", ",".join(FEATURE_COLUMNS))
+        mlflow.log_param("categorical_columns", ",".join(CAT_COLUMNS))
+
+        for metric_name, metric_value in metrics.items():
+            mlflow.log_metric(metric_name, float(metric_value))
+        mlflow.log_metric("best_iteration", float(model.get_best_iteration()))
+
+        mlflow.log_artifact(str(config.model_path), artifact_path="artifacts")
+        mlflow.log_artifact(str(config.meta_path), artifact_path="artifacts")
+        model_uri = mlflow.catboost.log_model(
+            cb_model=model,
+            name="model",
+            registered_model_name=config.mlflow_registered_model_name,
+        ).model_uri
+        mlflow.set_tag("model_uri", model_uri)
+        return run_id
+
+
 def main() -> None:
-    config = parse_args()
+    config = get_train_config()
 
     raw_df = load_raw_data(config.data_path)
     X, y = build_training_dataset(raw_df)
@@ -213,11 +241,32 @@ def main() -> None:
         metrics=metrics,
         n_train_rows=len(X_train),
         n_valid_rows=len(X_valid),
+        mlflow_run_id="pending",
+    )
+    run_id = log_to_mlflow(
+        config=config,
+        model=model,
+        metrics=metrics,
+        n_train_rows=len(X_train),
+        n_valid_rows=len(X_valid),
+    )
+    save_artifacts(
+        model=model,
+        config=config,
+        metrics=metrics,
+        n_train_rows=len(X_train),
+        n_valid_rows=len(X_valid),
+        mlflow_run_id=run_id,
+        save_model_file=False,
     )
 
     print("Training complete.")
     print(f"Model saved to: {config.model_path}")
     print(f"Metadata saved to: {config.meta_path}")
+    print(
+        f"MLflow: tracking_uri={config.mlflow_tracking_uri}, "
+        f"experiment={config.mlflow_experiment}, run_id={run_id}"
+    )
     print(
         "Validation metrics: "
         f"MAE={metrics['mae']:.6f}, RMSE={metrics['rmse']:.6f}, "
