@@ -77,8 +77,8 @@ def build_model_params(*, random_state: int, best_params: dict[str, Any]) -> dic
     return {
         **best_params,
         "cat_features": CAT_COLUMNS,
-        "loss_function": "MAE",
-        "eval_metric": "MAE",
+        "loss_function": "RMSE",
+        "eval_metric": "RMSE",
         "random_seed": random_state,
         "verbose": False,
     }
@@ -91,8 +91,8 @@ def suggest_catboost_params(trial: optuna.Trial, random_state: int) -> dict[str,
         "depth": trial.suggest_int("depth", 4, 10),
         "l2_leaf_reg": trial.suggest_float("l2_leaf_reg", 1.0, 20.0),
         "cat_features": CAT_COLUMNS,
-        "loss_function": "MAE",
-        "eval_metric": "MAE",
+        "loss_function": "RMSE",
+        "eval_metric": "RMSE",
         "random_seed": random_state,
         "verbose": False,
     }
