@@ -1,69 +1,135 @@
+import mlflow
+import mlflow.catboost
 import pandas as pd
 import numpy as np
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import mean_squared_error, r2_score
+from sklearn.metrics import mean_squared_error
 from catboost import CatBoostRegressor, Pool
-import joblib
 
-df = pd.read_csv("data/dataset.csv")
 
-TARGET = "CTR"
+try:
+    from .schema import FEATURE_SCHEMA
+    from .config import get_train_config
+except ImportError:
+    from schema import FEATURE_SCHEMA
+    from config import get_train_config
 
-# Удаляем строки без таргета
-df = df.dropna(subset=[TARGET])
 
-X = df.drop(columns=[TARGET])
-y = df[TARGET]
+config = get_train_config()
 
-# Определяем категориальные признаки
-cat_features = X.select_dtypes(include=["object", "category"]).columns.tolist()
-num_features = X.select_dtypes(include=["int64", "float64"]).columns.tolist()
+mlflow.set_tracking_uri(config.mlflow_tracking_uri)
+mlflow.set_experiment("CTR Prediction with CatBoost")
 
-# Заполняем пропуски
-X[cat_features] = X[cat_features].fillna("missing")
-X[num_features] = X[num_features].fillna(0)
+DATA_PATH = "data/dataset.csv"
 
-# =========================
-# 3. Train / Validation split
-# =========================
-X_train, X_val, y_train, y_val = train_test_split(
-    X, y, test_size=0.2, random_state=42
+df = pd.read_csv(DATA_PATH)
+
+# TARGET это доля (clicks/impressions)
+# Важно: weight-колонка не должна попадать в признаки (иначе leakage)
+TARGET = FEATURE_SCHEMA.target
+WEIGHT_COL = FEATURE_SCHEMA.weight
+
+missing = [c for c in [TARGET, WEIGHT_COL] if c not in df.columns]
+if missing:
+    raise KeyError(f"Missing required columns in dataset: {missing}")
+
+X = df.drop(columns=[TARGET, WEIGHT_COL])
+y = df[TARGET].astype(float)
+w = df[WEIGHT_COL].astype(float)
+
+cat_features = FEATURE_SCHEMA.categorical
+num_features = FEATURE_SCHEMA.numerical
+
+# Базовая санитарная обработка: CatBoost чувствителен к NaN/типам в category
+for c in cat_features:
+    if c in X.columns:
+        X[c] = X[c].astype("string").fillna("__NA__")
+for c in num_features:
+    if c in X.columns:
+        X[c] = pd.to_numeric(X[c], errors="coerce")
+        if X[c].isna().any():
+            X[c] = X[c].fillna(X[c].median())
+
+# Веса должны быть неотрицательными
+if (w < 0).any():
+    raise ValueError("Weights must be non-negative.")
+
+X_train, X_test, y_train, y_test, w_train, w_test = train_test_split(
+    X, y, w, test_size=0.15, random_state=42
+)
+X_train, X_valid, y_train, y_valid, w_train, w_valid = train_test_split(
+    X_train, y_train, w_train, test_size=0.1765, random_state=42  # ~0.15 от исходного
 )
 
-train_pool = Pool(X_train, y_train, cat_features=cat_features)
-val_pool = Pool(X_val, y_val, cat_features=cat_features)
+train_pool = Pool(X_train, y_train, cat_features=cat_features, weight=w_train)
+valid_pool = Pool(X_valid, y_valid, cat_features=cat_features, weight=w_valid)
 
-# =========================
-# 4. Обучение модели
-# =========================
-model = CatBoostRegressor(
-    iterations=2000,
-    learning_rate=0.03,
-    depth=8,
-    loss_function="RMSE",
-    eval_metric="RMSE",
-    random_seed=42,
-    early_stopping_rounds=200,
-    verbose=200
-)
 
-model.fit(train_pool, eval_set=val_pool)
+# Запуск контекста MLflow и сохранение гиперпараметров
+def experiment(run_name, train_pool, valid_pool, X_test, y_test, w_test, loss_function=None, eval_metric=None):
+    with mlflow.start_run(run_name=run_name):
+        if loss_function is not None:
+            mlflow.log_param("loss_function", loss_function)
+        if eval_metric is not None:
+            mlflow.log_param("eval_metric", eval_metric)
 
-# =========================
-# 5. Оценка качества
-# =========================
-preds = model.predict(X_val)
+        mlflow.log_param("max_depth", 8)
+        mlflow.log_param("learning_rate", 0.03)
+        mlflow.log_param("iterations", 2000)
+        mlflow.log_param("early_stopping_rounds", 200)
 
-rmse = np.sqrt(mean_squared_error(y_val, preds))
-r2 = r2_score(y_val, preds)
+        mlflow.log_param("cat_features", cat_features)
+        mlflow.log_param("num_features", num_features)
+        mlflow.log_param("target", TARGET)
+        mlflow.log_param("weight_col", WEIGHT_COL)
 
-print(f"RMSE: {rmse}")
-print(f"R2: {r2}")
+        model = CatBoostRegressor(
+            iterations=2000,
+            learning_rate=0.03,
+            depth=8,
+            loss_function=loss_function,
+            eval_metric=eval_metric,
+            random_seed=42,
+            early_stopping_rounds=200,
+            use_best_model=True,
+            verbose=200
+        )
 
-# =========================
-# 6. Сохранение модели
-# =========================
-model.save_model("ctr_model.cbm")
-joblib.dump(cat_features, "cat_features.pkl")
+        model.fit(train_pool, eval_set=valid_pool)
 
-print("Модель сохранена.")
+        test_pool = Pool(X_test, cat_features=cat_features)
+        pred = model.predict(test_pool)
+
+        wrmse = np.sqrt(np.average((y_test - pred) ** 2, weights=w_test))
+        rmse  = np.sqrt(mean_squared_error(y_test, pred))
+
+        print(f"RMSE (unweighted): {rmse:.6f}")
+        print(f"RMSE (weighted):   {wrmse:.6f}")
+        print(f"Best iteration:    {model.get_best_iteration()}")
+
+
+        mlflow.log_metric("RMSE", rmse)
+        mlflow.log_metric("Weighted RMSE", wrmse)
+        mlflow.log_metric("Best Iteration", model.get_best_iteration())
+
+
+        # Сохранение модели в MLflow
+        mlflow.catboost.log_model(model, artifact_path="model")
+        print("Model and metadata saved.")
+
+
+
+if __name__ == "__main__":
+    experiment(
+        run_name="catboost_ctr_model_MAE",
+        train_pool=train_pool, valid_pool=valid_pool, X_test=X_test, y_test=y_test, w_test=w_test,
+        loss_function="MAE",
+        eval_metric="MAE"
+    )
+
+    experiment(
+        run_name="catboost_ctr_model_RMSE",
+        train_pool=train_pool, valid_pool=valid_pool, X_test=X_test, y_test=y_test, w_test=w_test,
+        loss_function="RMSE",
+        eval_metric="RMSE"
+    )
