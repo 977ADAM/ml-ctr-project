@@ -8,21 +8,33 @@ import mlflow
 import numpy as np
 import optuna
 import pandas as pd
-from catboost import CatBoostRegressor
+from catboost import CatBoostRegressor, Pool
 from sklearn.metrics import mean_absolute_error
 from sklearn.model_selection import GroupKFold
 
 from config import TrainConfig, get_train_config
 
+CAMPAIGN_ID_COLUMN = "ID кампании"
+BANNER_ID_COLUMN = "ID баннера"
+BANNER_TYPE_COLUMN = "Тип баннера"
+DEVICE_TYPE_COLUMN = "Тип устройства"
+IMPRESSIONS_COLUMN = "Показы"
+CLICKS_COLUMN = "Переходы"
+
 FEATURE_COLUMNS = [
-    "ID кампании",
-    "ID баннера",
-    "Тип баннера",
-    "Тип устройства",
-    "Показы",
+    CAMPAIGN_ID_COLUMN,
+    BANNER_ID_COLUMN,
+    BANNER_TYPE_COLUMN,
+    DEVICE_TYPE_COLUMN,
+    IMPRESSIONS_COLUMN,
 ]
-CAT_COLUMNS = ["ID кампании", "ID баннера", "Тип баннера", "Тип устройства"]
-REQUIRED_COLUMNS = FEATURE_COLUMNS + ["Переходы"]
+CAT_COLUMNS = [
+    CAMPAIGN_ID_COLUMN,
+    BANNER_ID_COLUMN,
+    BANNER_TYPE_COLUMN,
+    DEVICE_TYPE_COLUMN,
+]
+REQUIRED_COLUMNS = FEATURE_COLUMNS + [CLICKS_COLUMN]
 N_SPLITS = 5
 N_TRIALS = 40
 
@@ -43,21 +55,33 @@ def load_raw_data(data_path) -> pd.DataFrame:
 
 def build_training_dataset(
     raw_df: pd.DataFrame,
-) -> tuple[pd.DataFrame, pd.Series, pd.Series]:
+) -> tuple[pd.DataFrame, pd.Series, pd.Series, pd.Series]:
     df = raw_df.copy()
-    df = df[df["Показы"] > 0].copy()
+    df = df[df[IMPRESSIONS_COLUMN] > 0].copy()
     if df.empty:
-        raise ValueError("Dataset has no rows with 'Показы' > 0.")
+        raise ValueError(f"Dataset has no rows with '{IMPRESSIONS_COLUMN}' > 0.")
 
-    shows = df["Показы"].astype(float).to_numpy()
-    clicks = df["Переходы"].clip(lower=0).astype(float).to_numpy()
+    shows = df[IMPRESSIONS_COLUMN].astype(float).to_numpy()
+    clicks = df[CLICKS_COLUMN].clip(lower=0).astype(float).to_numpy()
     clipped_clicks = np.minimum(clicks, shows)
     target = np.clip(clipped_clicks / shows, 0.0, 1.0)
+    sample_weight = pd.Series(shows, index=df.index, name="sample_weight")
 
     X = df[FEATURE_COLUMNS].copy()
     y = pd.Series(target, index=df.index, name="click_probability")
-    groups = df["ID баннера"].copy()
-    return X, y, groups
+    groups = df[BANNER_ID_COLUMN].copy()
+    return X, y, groups, sample_weight
+
+
+def build_model_params(*, random_state: int, best_params: dict[str, Any]) -> dict[str, Any]:
+    return {
+        **best_params,
+        "cat_features": CAT_COLUMNS,
+        "loss_function": "MAE",
+        "eval_metric": "MAE",
+        "random_seed": random_state,
+        "verbose": False,
+    }
 
 
 def suggest_catboost_params(trial: optuna.Trial, random_state: int) -> dict[str, Any]:
@@ -79,6 +103,7 @@ def cv_mae_for_params(
     X: pd.DataFrame,
     y: pd.Series,
     groups: pd.Series,
+    sample_weight: pd.Series,
     params: dict[str, Any],
 ) -> tuple[float, list[int]]:
     cv = GroupKFold(n_splits=N_SPLITS)
@@ -88,21 +113,26 @@ def cv_mae_for_params(
     for train_idx, valid_idx in cv.split(X, y, groups=groups):
         X_train = X.iloc[train_idx]
         y_train = y.iloc[train_idx]
+        w_train = sample_weight.iloc[train_idx]
         X_valid = X.iloc[valid_idx]
         y_valid = y.iloc[valid_idx]
+        w_valid = sample_weight.iloc[valid_idx]
 
         model = CatBoostRegressor(**params)
+        train_pool = Pool(X_train, y_train, cat_features=CAT_COLUMNS, weight=w_train)
+        valid_pool = Pool(X_valid, y_valid, cat_features=CAT_COLUMNS, weight=w_valid)
         model.fit(
-            X_train,
-            y_train,
-            eval_set=(X_valid, y_valid),
+            train_pool,
+            eval_set=valid_pool,
             early_stopping_rounds=200,
             use_best_model=True,
             verbose=False,
         )
 
-        preds = np.clip(model.predict(X_valid), 0.0, 1.0)
-        fold_mae_scores.append(float(mean_absolute_error(y_valid, preds)))
+        preds = np.clip(model.predict(valid_pool), 0.0, 1.0)
+        fold_mae_scores.append(
+            float(mean_absolute_error(y_valid, preds, sample_weight=w_valid))
+        )
 
         best_iter = model.get_best_iteration()
         if best_iter is None or best_iter < 0:
@@ -118,6 +148,7 @@ def tune_hyperparameters(
     X: pd.DataFrame,
     y: pd.Series,
     groups: pd.Series,
+    sample_weight: pd.Series,
     random_state: int,
 ) -> tuple[dict[str, Any], float]:
     best_fold_iterations: list[int] = []
@@ -129,6 +160,7 @@ def tune_hyperparameters(
             X=X,
             y=y,
             groups=groups,
+            sample_weight=sample_weight,
             params=params,
         )
         trial.set_user_attr("fold_best_iterations", fold_iterations)
@@ -155,18 +187,14 @@ def tune_hyperparameters(
 def train_final_model(
     X: pd.DataFrame,
     y: pd.Series,
+    sample_weight: pd.Series,
     best_params: dict[str, Any],
     random_state: int,
 ) -> CatBoostRegressor:
     model = CatBoostRegressor(
-        **best_params,
-        cat_features=CAT_COLUMNS,
-        loss_function="MAE",
-        eval_metric="MAE",
-        random_seed=random_state,
-        verbose=False,
+        **build_model_params(random_state=random_state, best_params=best_params)
     )
-    model.fit(X, y, verbose=200)
+    model.fit(X, y, sample_weight=sample_weight, verbose=200)
     return model
 
 
@@ -198,6 +226,7 @@ def save_artifacts(
         "feature_columns": FEATURE_COLUMNS,
         "categorical_columns": CAT_COLUMNS,
         "target_name": "click_probability",
+        "sample_weight_name": IMPRESSIONS_COLUMN,
         "rows_train": n_train_rows,
         "rows_valid": n_valid_rows,
         "best_iteration": get_model_best_iteration(model),
@@ -242,6 +271,8 @@ def log_to_mlflow(
         mlflow.log_param("n_valid_rows", n_valid_rows)
         mlflow.log_param("feature_columns", ",".join(FEATURE_COLUMNS))
         mlflow.log_param("categorical_columns", ",".join(CAT_COLUMNS))
+        mlflow.log_param("sample_weight_column", IMPRESSIONS_COLUMN)
+        mlflow.log_param("weighted_training", True)
 
         for metric_name, metric_value in metrics.items():
             mlflow.log_metric(metric_name, float(metric_value))
@@ -262,18 +293,21 @@ def main() -> None:
     config = get_train_config()
 
     raw_df = load_raw_data(config.data_path)
-    X, y, groups = build_training_dataset(raw_df)
+    X, y, groups, sample_weight = build_training_dataset(raw_df)
+    n_rows = len(X)
 
     best_params, cv_mae = tune_hyperparameters(
         X=X,
         y=y,
         groups=groups,
+        sample_weight=sample_weight,
         random_state=config.random_state,
     )
 
     model = train_final_model(
         X=X,
         y=y,
+        sample_weight=sample_weight,
         best_params=best_params,
         random_state=config.random_state,
     )
@@ -287,7 +321,7 @@ def main() -> None:
         model=model,
         config=config,
         metrics=metrics,
-        n_train_rows=len(X),
+        n_train_rows=n_rows,
         n_valid_rows=0,
         best_params=best_params,
         mlflow_run_id="pending",
@@ -298,7 +332,7 @@ def main() -> None:
         model=model,
         metrics=metrics,
         best_params=best_params,
-        n_train_rows=len(X),
+        n_train_rows=n_rows,
         n_valid_rows=0,
     )
 
@@ -306,7 +340,7 @@ def main() -> None:
         model=model,
         config=config,
         metrics=metrics,
-        n_train_rows=len(X),
+        n_train_rows=n_rows,
         n_valid_rows=0,
         best_params=best_params,
         mlflow_run_id=run_id,
