@@ -8,7 +8,7 @@ class FeatureSchema:
     categorical: List[str]
     drop_columns: List[str]
     target: str = None
-    weight: str = None
+    impressions: str = None
     clicks: str = None
 
 FEATURE_SCHEMA = FeatureSchema(
@@ -25,6 +25,6 @@ FEATURE_SCHEMA = FeatureSchema(
         "CTR"
     ],
     target="CTR",
-    weight="Показы",
+    impressions="Показы",
     clicks="Переходы",
 )

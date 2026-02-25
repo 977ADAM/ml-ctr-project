@@ -4,12 +4,12 @@ import pandas as pd
 import json
 import numpy as np
 import logging
+
 from pandas.api.types import is_numeric_dtype
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_squared_error, mean_absolute_error
 from catboost import CatBoostRegressor, Pool
-from typing import List
-
+from typing import List, Tuple
 
 try:
     from .schema import FEATURE_SCHEMA
@@ -29,13 +29,13 @@ mlflow.set_experiment(config.mlflow_experiment)
 
 DATA_PATH = config.data_path
 
-def load_and_prepare_data(data_path: str):
+def load_and_prepare_data(data_path: str) -> Tuple[pd.DataFrame, pd.Series, pd.Series, str, str, List[str], List[str]]:
     df = pd.read_csv(data_path)
 
     # TARGET это доля (clicks/impressions)
     # Важно: weight-колонка не должна попадать в признаки (иначе leakage)
     TARGET = FEATURE_SCHEMA.target
-    WEIGHT_COL = FEATURE_SCHEMA.weight
+    WEIGHT_COL = FEATURE_SCHEMA.impressions
     CLICKS_COL = FEATURE_SCHEMA.clicks
 
     missing = [c for c in [TARGET, WEIGHT_COL, CLICKS_COL] if c not in df.columns]
@@ -59,28 +59,23 @@ def load_and_prepare_data(data_path: str):
         raise ValueError("All weights are zero. Weighted metrics are undefined.")
 
     cat_features = [c for c in FEATURE_SCHEMA.categorical if c in X.columns]
-    num_features = FEATURE_SCHEMA.numerical
+    num_features = [c for c in FEATURE_SCHEMA.numerical if c in X.columns]
 
-    extra_non_numeric = [
+    # Всё, что не числовое и не описано в схеме как numerical — считаем категориальным (детерминированно).
+    schema_cat = set(cat_features)
+    schema_num = set(num_features)
+    inferred_cat = [
         c for c in X.columns
-        if c not in set(cat_features) and c not in set(num_features) and (not is_numeric_dtype(X[c]))
+        if c not in schema_cat and c not in schema_num and (not is_numeric_dtype(X[c]))
     ]
-    if extra_non_numeric:
-        # Добавляем в категориальные детерминированно (по порядку колонок)
-        cat_features = cat_features + [c for c in extra_non_numeric if c not in cat_features]
+    for c in inferred_cat:
+        if c not in cat_features:
+            cat_features.append(c)
 
     for c in cat_features:
         X[c] = X[c].astype("string").fillna("__MISSING__")
 
-    leftover_non_numeric = [
-        c for c in X.columns
-        if c not in set(cat_features) and c not in set(num_features) and (not is_numeric_dtype(X[c]))
-    ]
-    for c in leftover_non_numeric:
-        X[c] = X[c].astype("string").fillna("__MISSING__")
-        if c not in cat_features:
-            cat_features.append(c)
-
+    cat_features = list(dict.fromkeys(cat_features))
     return X, y, w, TARGET, WEIGHT_COL, cat_features, num_features
 
 
@@ -88,6 +83,8 @@ def load_and_prepare_data(data_path: str):
 test_size = 0.15
 valid_size = 0.15
 RANDOM_SEED = 42
+
+np.random.seed(RANDOM_SEED)
 
 def _cat_feature_indices(X: pd.DataFrame, cat_feature_names: List[str]) -> List[int]:
     """
@@ -121,6 +118,9 @@ def experiment(
             "model_class": "CatBoostRegressor",
             "n_rows": int(len(y_test) + train_pool.num_row() + valid_pool.num_row()),
             "n_features": int(train_pool.num_col()),
+            "random_seed": RANDOM_SEED,
+            "test_size": test_size,
+            "valid_size": valid_size,
         })
 
         if loss_function is not None:
