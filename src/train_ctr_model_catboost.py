@@ -228,6 +228,6 @@ if __name__ == "__main__":
         train_pool=train_pool, valid_pool=valid_pool, X_test=X_test, y_test=y_test, w_test=w_test,
         cat_features=cat_features, cat_features_idx=cat_features_idx, target=TARGET, weight_col=WEIGHT_COL,
         num_features=num_features,
-        loss_function="RMSE",
-        eval_metric="RMSE"
+        loss_function="Poisson",
+        eval_metric="Poisson"
     )
