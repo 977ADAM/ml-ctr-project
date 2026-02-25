@@ -85,29 +85,6 @@ class TrainConfig:
     epochs: int = 100
     device: str = "cpu"
 
-
-def prepare_data(df: pd.DataFrame, cat_cols, impr_col, click_col):
-    # факторизация категорий -> int [0..C-1]
-    mappings = {}
-    X_cat = []
-    for col in cat_cols:
-        codes, uniques = pd.factorize(df[col].astype(str), sort=True)
-        X_cat.append(codes.astype(np.int64))
-        mappings[col] = {"classes": uniques.astype(str).tolist()}
-    X_cat = np.stack(X_cat, axis=1)
-
-    impr = df[impr_col].astype(np.float32).values
-    clicks = df[click_col].astype(np.float32).values
-
-    # базовые проверки
-    # if np.any(impr <= 0):
-    #     raise ValueError("Найдены строки с Показы <= 0 — их нужно удалить/исправить.")
-    # if np.any(clicks < 0) or np.any(clicks > impr):
-    #     raise ValueError("Найдены некорректные Переходы (clicks) относительно Показы (impr).")
-
-    return X_cat, clicks, impr, mappings
-
-
 def make_loader(X_cat, clicks, impr, batch_size, shuffle=True):
     ds = torch.utils.data.TensorDataset(
         torch.tensor(X_cat, dtype=torch.long),
@@ -116,6 +93,40 @@ def make_loader(X_cat, clicks, impr, batch_size, shuffle=True):
     )
     return torch.utils.data.DataLoader(ds, batch_size=batch_size, shuffle=shuffle)
 
+def fit_mappings(df: pd.DataFrame, cat_cols):
+    """
+    Фитим словари по train. Индекс 0 зарезервирован под UNK.
+    """
+    mappings = {}
+    for col in cat_cols:
+        uniq = pd.Index(df[col].astype(str).unique())
+        # UNK=0, остальные с 1
+        classes = ["__UNK__"] + uniq.tolist()
+        value_to_idx = {v: i for i, v in enumerate(classes)}
+        mappings[col] = {"classes": classes, "value_to_idx": value_to_idx}
+    return mappings
+
+def transform_cats(df: pd.DataFrame, cat_cols, mappings) -> np.ndarray:
+
+    X_cat = np.zeros((len(df), len(cat_cols)), dtype=np.int64)
+
+    for j, col in enumerate(cat_cols):
+        m = mappings[col]["value_to_idx"]
+        vals = df[col].astype(str).values
+        # unknown -> 0
+        X_cat[:, j] = np.fromiter((m.get(v, 0) for v in vals), dtype=np.int64, count=len(vals))
+    return X_cat
+
+def prepare_targets(df: pd.DataFrame, impr_col, click_col):
+    impr = df[impr_col].astype(np.float32).values
+    clicks = df[click_col].astype(np.float32).values
+
+    # базовые проверки (лучше держать включёнными)
+    if np.any(impr <= 0):
+        raise ValueError("Найдены строки с Показы <= 0 — их нужно удалить/исправить.")
+    if np.any(clicks < 0) or np.any(clicks > impr):
+        raise ValueError("Найдены некорректные Переходы (clicks) относительно Показы (impr).")
+    return clicks, impr
 
 def train_one_run(csv_path="dataset.csv", out_dir="ctr_model"):
     cfg = TrainConfig()
@@ -128,13 +139,16 @@ def train_one_run(csv_path="dataset.csv", out_dir="ctr_model"):
     impr_col = "Показы"
     click_col = "Переходы"
 
-    X_cat, clicks, impr, mappings = prepare_data(df, cat_cols, impr_col, click_col)
-
-    X_tr, X_te, c_tr, c_te, n_tr, n_te = train_test_split(
-        X_cat, clicks, impr, test_size=cfg.test_size, random_state=cfg.seed
+    clicks, impr = prepare_targets(df, impr_col, click_col)
+    df_tr, df_te, c_tr, c_te, n_tr, n_te = train_test_split(
+        df, clicks, impr, test_size=cfg.test_size, random_state=cfg.seed
     )
 
-    cardinalities = [int(X_cat[:, i].max() + 1) for i in range(X_cat.shape[1])]
+    mappings = fit_mappings(df_tr, cat_cols)
+    X_tr = transform_cats(df_tr, cat_cols, mappings)
+    X_te = transform_cats(df_te, cat_cols, mappings)
+
+    cardinalities = [len(mappings[col]["classes"]) for col in cat_cols]
     model = CTRNet(cardinalities, emb_dim=cfg.emb_dim, hidden=cfg.hidden, dropout=cfg.dropout).to(cfg.device)
 
     opt = torch.optim.AdamW(model.parameters(), lr=cfg.lr)
@@ -184,11 +198,13 @@ def train_one_run(csv_path="dataset.csv", out_dir="ctr_model"):
             torch.save(model.state_dict(), out_dir / "model.pt")
 
     # сохраняем метаданные (маппинги категорий + список колонок)
+    # value_to_idx в json не пишем (он восстановится из classes)
+    mappings_to_save = {k: {"classes": v["classes"]} for k, v in mappings.items()}
     meta = {
         "cat_cols": cat_cols,
         "impr_col": impr_col,
         "click_col": click_col,
-        "mappings": mappings,
+        "mappings": mappings_to_save,
         "cardinalities": cardinalities,
         "arch": {"emb_dim": cfg.emb_dim, "hidden": list(cfg.hidden), "dropout": cfg.dropout},
     }
