@@ -42,6 +42,8 @@ def load_and_prepare_data(data_path: str):
     # Базовая валидация
     if y.isna().any():
         raise ValueError(f"Целевой столбец '{TARGET}' contains NaNs.")
+    if ((y < 0) | (y > 1)).any():
+        raise ValueError(f"Target '{TARGET}' is expected in [0, 1] range, but out-of-range values found.")
     if w.isna().any():
         raise ValueError(f"Weight column '{WEIGHT_COL}' contains NaNs.")
     if (w < 0).any():
@@ -74,7 +76,14 @@ test_size = 0.15
 valid_size = 0.15
 RANDOM_SEED = 42
 
-valid_rel = valid_size / (1.0 - test_size)
+def _cat_feature_indices(X: pd.DataFrame, cat_feature_names: list[str]) -> list[int]:
+    """
+    CatBoost стабильнее работает, когда cat_features переданы индексами колонок.
+    Это также защищает от различий между версиями CatBoost/типами входных данных.
+    """
+    cols = list(X.columns)
+    name_set = set(cat_feature_names)
+    return [i for i, c in enumerate(cols) if c in name_set]
 
 
 # Запуск контекста MLflow и сохранение гиперпараметров
@@ -86,6 +95,7 @@ def experiment(
     y_test,
     w_test,
     cat_features,
+    cat_features_idx,
     target,
     weight_col,
     loss_function=None,
@@ -113,6 +123,7 @@ def experiment(
 
         # В MLflow параметры лучше логировать строкой (детерминированно и без сюрпризов сериализации)
         mlflow.log_param("cat_features", json.dumps(cat_features, ensure_ascii=False))
+        mlflow.log_param("cat_features_idx", json.dumps(cat_features_idx, ensure_ascii=False))
         mlflow.log_param("target", target)
         mlflow.log_param("weight_col", weight_col)
 
@@ -135,25 +146,43 @@ def experiment(
 
         model.fit(train_pool, eval_set=valid_pool)
 
-        test_pool = Pool(X_test, y_test, cat_features=cat_features, weight=w_test)
+        test_pool = Pool(X_test, y_test, cat_features=cat_features_idx, weight=w_test)
         pred = model.predict(test_pool)
 
         if np.sum(w_test) > 0:
             wrmse = np.sqrt(np.average((y_test - pred) ** 2, weights=w_test))
+            wmae = np.average(np.abs(y_test - pred), weights=w_test)
         else:
             wrmse = float("nan")
+            wmae = float("nan")
 
         rmse  = np.sqrt(mean_squared_error(y_test, pred))
+        mae = mean_absolute_error(y_test, pred)
 
         print(f"RMSE (unweighted): {rmse:.6f}")
         print(f"RMSE (weighted):   {wrmse:.6f}")
+        print(f"MAE  (unweighted): {mae:.6f}")
+        print(f"MAE  (weighted):   {wmae:.6f}")
         print(f"Best iteration:    {model.get_best_iteration()}")
 
 
         mlflow.log_metric("rmse", rmse)
         if np.isfinite(wrmse):
             mlflow.log_metric("wrmse", wrmse)
+        mlflow.log_metric("mae", mae)
+        if np.isfinite(wmae):
+            mlflow.log_metric("wmae", wmae)
         mlflow.log_metric("best_iteration", model.get_best_iteration())
+
+        # Для удобства трекинга: логируем "главную" метрику, соответствующую eval_metric
+        if (eval_metric or "").upper() == "MAE":
+            mlflow.log_metric("primary_metric", mae)
+            if np.isfinite(wmae):
+                mlflow.log_metric("primary_metric_weighted", wmae)
+        elif (eval_metric or "").upper() == "RMSE":
+            mlflow.log_metric("primary_metric", rmse)
+            if np.isfinite(wrmse):
+                mlflow.log_metric("primary_metric_weighted", wrmse)
 
 
         # Сохранение модели в MLflow
@@ -164,6 +193,7 @@ def experiment(
 
 if __name__ == "__main__":
     X, y, w, TARGET, WEIGHT_COL, cat_features, num_features = load_and_prepare_data(DATA_PATH)
+    cat_features_idx = _cat_feature_indices(X, cat_features)
 
     X_train, X_test, y_train, y_test, w_train, w_test = train_test_split(
         X, y, w, test_size=test_size, random_state=RANDOM_SEED
@@ -173,13 +203,13 @@ if __name__ == "__main__":
         X_train, y_train, w_train, test_size=valid_rel, random_state=RANDOM_SEED
     )
 
-    train_pool = Pool(X_train, y_train, cat_features=cat_features, weight=w_train)
-    valid_pool = Pool(X_valid, y_valid, cat_features=cat_features, weight=w_valid)
+    train_pool = Pool(X_train, y_train, cat_features=cat_features_idx, weight=w_train)
+    valid_pool = Pool(X_valid, y_valid, cat_features=cat_features_idx, weight=w_valid)
 
     experiment(
         run_name="catboost_ctr_model_MAE",
         train_pool=train_pool, valid_pool=valid_pool, X_test=X_test, y_test=y_test, w_test=w_test,
-        cat_features=cat_features, target=TARGET, weight_col=WEIGHT_COL,
+        cat_features=cat_features, cat_features_idx=cat_features_idx, target=TARGET, weight_col=WEIGHT_COL,
         loss_function="MAE",
         eval_metric="MAE"
     )
@@ -187,7 +217,7 @@ if __name__ == "__main__":
     experiment(
         run_name="catboost_ctr_model_RMSE",
         train_pool=train_pool, valid_pool=valid_pool, X_test=X_test, y_test=y_test, w_test=w_test,
-        cat_features=cat_features, target=TARGET, weight_col=WEIGHT_COL,
+        cat_features=cat_features, cat_features_idx=cat_features_idx, target=TARGET, weight_col=WEIGHT_COL,
         loss_function="RMSE",
         eval_metric="RMSE"
     )
