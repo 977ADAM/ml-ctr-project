@@ -9,6 +9,7 @@ class FeatureSchema:
     drop_columns: List[str]
     target: str = None
     weight: str = None
+    clicks: str = None
 
 FEATURE_SCHEMA = FeatureSchema(
     numerical=[
