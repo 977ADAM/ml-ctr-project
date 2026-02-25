@@ -16,7 +16,7 @@ st.set_page_config(page_title="CTR Predictor", layout="wide")
 
 st.title("📊 CTR Model Test Interface")
 
-MODEL_DIR = "ctr_model"
+MODEL_DIR = "pytorch/models"
 
 
 @st.cache_resource
