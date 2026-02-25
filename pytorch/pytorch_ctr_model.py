@@ -3,7 +3,6 @@
 
 import json
 import math
-from dataclasses import dataclass
 from pathlib import Path
 import logging
 
