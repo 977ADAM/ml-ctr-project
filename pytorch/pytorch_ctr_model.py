@@ -1,8 +1,6 @@
-# train_ctr_agg.py
 # pip install pandas numpy scikit-learn torch
 
 import json
-import math
 from pathlib import Path
 import logging
 import copy
@@ -10,15 +8,16 @@ import copy
 import numpy as np
 import pandas as pd
 import torch
-import torch.nn as nn
 from sklearn.model_selection import train_test_split, GroupKFold
 
 try:
     from .config import Config
     from .inference import load_model
+    from .model import CTRNet
 except ImportError:
     from config import Config
     from inference import load_model
+    from model import CTRNet
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -38,37 +37,6 @@ def binomial_logloss(clicks: np.ndarray, impr: np.ndarray, p: np.ndarray, eps: f
     p = np.clip(p, eps, 1 - eps)
     ll = clicks * np.log(p) + (impr - clicks) * np.log(1 - p)
     return float(-ll.sum() / impr.sum())  # среднее на 1 показ
-
-
-# ---------- model ----------
-class CTRNet(nn.Module):
-    """
-    Эмбеддинги для категориальных фич + MLP -> logit(p).
-    """
-    def __init__(self, cardinalities, emb_dim=16, hidden=(64, 32), dropout=0.1):
-        super().__init__()
-
-        self.embs = nn.ModuleList()
-        emb_out = 0
-        for c in cardinalities:
-            d = min(emb_dim, int(math.ceil(c ** 0.25) * 4))  # норм эвристика
-            self.embs.append(nn.Embedding(c, d))
-            emb_out += d
-
-        layers = []
-        in_dim = emb_out
-        for h in hidden:
-            layers += [nn.Linear(in_dim, h), nn.ReLU(), nn.Dropout(dropout)]
-            in_dim = h
-        layers += [nn.Linear(in_dim, 1)]
-        self.mlp = nn.Sequential(*layers)
-
-    def forward(self, x_cat):
-        embs = [emb(x_cat[:, i]) for i, emb in enumerate(self.embs)]
-        z = torch.cat(embs, dim=1)
-        logit = self.mlp(z).squeeze(1)
-        return logit
-
 
 def binomial_nll_from_logits(logits, clicks, impr):
     """
