@@ -203,7 +203,7 @@ def train_with_groupkfold(csv_path="dataset.csv", out_dir="pytorch/models_gkf", 
     groups = (
         df[group_col]
         .astype(str)
-        .agg("_".join, axis=1)  # склеиваем ID кампании и баннера
+        .agg("_".join, axis=1)
         .values
     )   
 
@@ -387,8 +387,7 @@ if __name__ == "__main__":
     cat_cols = ["ID кампании", "ID баннера", "Тип баннера", "Тип устройства"]
     impr_col = "Показы"
     click_col = "Переходы"
-    # Пример запуска обучения:
-    # python train_ctr_agg.py
+
     train_one_run(
         df,
         cat_cols=cat_cols,

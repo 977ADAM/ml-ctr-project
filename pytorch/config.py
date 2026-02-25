@@ -12,5 +12,5 @@ class Config:
     dropout: float = 0.1
     lr: float = 1e-3
     batch_size: int = 128
-    epochs: int = 168
+    epochs: int = 25
     device: str = "cpu"

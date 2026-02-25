@@ -19,8 +19,8 @@ st.set_page_config(page_title="CTR Predictor", layout="wide")
 st.title("📊 CTR Model Test Interface")
 
 MODEL_DIR = "pytorch/models"
-MODEL_NAME = "modelgkf.pt"
-META_NAME = "metagkf.json"
+MODEL_NAME = "model.pt"
+META_NAME = "meta.json"
 
 
 @st.cache_resource
