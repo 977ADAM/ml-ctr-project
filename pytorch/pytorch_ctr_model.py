@@ -210,58 +210,7 @@ def train_one_run(csv_path="dataset.csv", out_dir="pytorch/models"):
     logger.info(f"Saved to: {out_dir.resolve()}")
     logger.info(f"Best val logloss: {best_val:.6f}")
 
-
-# ---------- inference ----------
-def load_model(model_dir="ctr_model", device=None):
-    model_dir = Path(model_dir)
-    meta = json.loads((model_dir / "meta.json").read_text(encoding="utf-8"))
-    device = device or ("cuda" if torch.cuda.is_available() else "cpu")
-
-    model = CTRNet(
-        meta["cardinalities"],
-        emb_dim=meta["arch"]["emb_dim"],
-        hidden=tuple(meta["arch"]["hidden"]),
-        dropout=meta["arch"]["dropout"],
-    ).to(device)
-    model.load_state_dict(torch.load(model_dir / "model.pt", map_location=device))
-    model.eval()
-    return model, meta, device
-
-def encode_row(row: dict, meta: dict) -> np.ndarray:
-    x = []
-    for col in meta["cat_cols"]:
-        classes = meta["mappings"][col]["classes"]
-        v = str(row.get(col, ""))
-        # unknown -> 0 (можно сделать отдельный UNK, но для простоты так)
-        idx = classes.index(v) if v in classes else 0
-        x.append(idx)
-    return np.array(x, dtype=np.int64)
-
-
-@torch.no_grad()
-def predict_ctr(rows, model_dir="ctr_model"):
-    model, meta, device = load_model(model_dir=model_dir)
-
-    X = np.stack([encode_row(r, meta) for r in rows], axis=0)
-
-    xb = torch.tensor(X, dtype=torch.long).to(device)
-
-    logits = model(xb).detach().cpu().numpy()
-
-    p = sigmoid_np(logits)
-
-    return p
-
-
 if __name__ == "__main__":
     # Пример запуска обучения:
     # python train_ctr_agg.py
     train_one_run(csv_path="data/dataset.csv", out_dir="pytorch/models")
-
-    # Пример инференса:
-    rows = [
-        {"ID кампании": 3405596, "ID баннера": 15262577, "Тип баннера": "interactive", "Тип устройства": "Компьютер", "Показы": 12596},
-        {"ID кампании": 9, "ID баннера": 9, "Тип баннера": "interactive", "Тип устройства": "Смартфон", "Показы": 500},
-    ]
-    preds = predict_ctr(rows, model_dir="pytorch/models")
-    logger.info(f"Pred CTR: {preds}")
