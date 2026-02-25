@@ -1,6 +1,7 @@
 import mlflow
 import mlflow.catboost
 import pandas as pd
+import json
 import numpy as np
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_squared_error
@@ -40,15 +41,12 @@ w = df[WEIGHT_COL].astype(float)
 cat_features = FEATURE_SCHEMA.categorical
 num_features = FEATURE_SCHEMA.numerical
 
-# Базовая санитарная обработка: CatBoost чувствителен к NaN/типам в category
-for c in cat_features:
-    if c in X.columns:
-        X[c] = X[c].astype("string").fillna("__NA__")
-for c in num_features:
-    if c in X.columns:
-        X[c] = pd.to_numeric(X[c], errors="coerce")
-        if X[c].isna().any():
-            X[c] = X[c].fillna(X[c].median())
+# Важно: в датасете могут отсутствовать некоторые фичи из схемы.
+# CatBoost Pool упадёт, если передать несуществующие cat_features.
+cat_features = [c for c in cat_features if c in X.columns]
+num_features = [c for c in num_features if c in X.columns]
+
+
 
 # Веса должны быть неотрицательными
 if (w < 0).any():
@@ -68,32 +66,40 @@ valid_pool = Pool(X_valid, y_valid, cat_features=cat_features, weight=w_valid)
 # Запуск контекста MLflow и сохранение гиперпараметров
 def experiment(run_name, train_pool, valid_pool, X_test, y_test, w_test, loss_function=None, eval_metric=None):
     with mlflow.start_run(run_name=run_name):
+        mlflow.log_param("data_path", DATA_PATH)
+        mlflow.log_param("model_class", "CatBoostRegressor")
+
         if loss_function is not None:
             mlflow.log_param("loss_function", loss_function)
         if eval_metric is not None:
             mlflow.log_param("eval_metric", eval_metric)
 
-        mlflow.log_param("max_depth", 8)
+        mlflow.log_param("depth", 8)
         mlflow.log_param("learning_rate", 0.03)
         mlflow.log_param("iterations", 2000)
         mlflow.log_param("early_stopping_rounds", 200)
 
-        mlflow.log_param("cat_features", cat_features)
-        mlflow.log_param("num_features", num_features)
+        # В MLflow параметры лучше логировать строкой (детерминированно и без сюрпризов сериализации)
+        mlflow.log_param("cat_features", json.dumps(cat_features, ensure_ascii=False))
+        mlflow.log_param("num_features", json.dumps(num_features, ensure_ascii=False))
         mlflow.log_param("target", TARGET)
         mlflow.log_param("weight_col", WEIGHT_COL)
 
-        model = CatBoostRegressor(
+        model_kwargs = dict(
             iterations=2000,
             learning_rate=0.03,
             depth=8,
-            loss_function=loss_function,
-            eval_metric=eval_metric,
             random_seed=42,
             early_stopping_rounds=200,
             use_best_model=True,
             verbose=200
         )
+        if loss_function is not None:
+            model_kwargs["loss_function"] = loss_function
+        if eval_metric is not None:
+            model_kwargs["eval_metric"] = eval_metric
+
+        model = CatBoostRegressor(**model_kwargs)
 
         model.fit(train_pool, eval_set=valid_pool)
 
@@ -108,9 +114,9 @@ def experiment(run_name, train_pool, valid_pool, X_test, y_test, w_test, loss_fu
         print(f"Best iteration:    {model.get_best_iteration()}")
 
 
-        mlflow.log_metric("RMSE", rmse)
-        mlflow.log_metric("Weighted RMSE", wrmse)
-        mlflow.log_metric("Best Iteration", model.get_best_iteration())
+        mlflow.log_metric("rmse", rmse)
+        mlflow.log_metric("wrmse", wrmse)
+        mlflow.log_metric("best_iteration", model.get_best_iteration())
 
 
         # Сохранение модели в MLflow
