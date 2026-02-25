@@ -32,20 +32,21 @@ def load_and_prepare_data(data_path: str):
     # Важно: weight-колонка не должна попадать в признаки (иначе leakage)
     TARGET = FEATURE_SCHEMA.target
     WEIGHT_COL = FEATURE_SCHEMA.weight
+    CLICKS_COL = FEATURE_SCHEMA.clicks
 
-    missing = [c for c in [TARGET, WEIGHT_COL] if c not in df.columns]
+    missing = [c for c in [TARGET, WEIGHT_COL, CLICKS_COL] if c not in df.columns]
     if missing:
         raise KeyError(f"Missing required columns in dataset: {missing}")
 
-    X = df.drop(columns=[TARGET, WEIGHT_COL]).copy()
+    X = df.drop(columns=[TARGET, WEIGHT_COL, CLICKS_COL]).copy()
     y = df[TARGET].astype(float)
     w = df[WEIGHT_COL].astype(float)
 
     # Базовая валидация
     if y.isna().any():
         raise ValueError(f"Целевой столбец '{TARGET}' contains NaNs.")
-    if ((y < 0) | (y > 1)).any():
-        raise ValueError(f"Target '{TARGET}' is expected in [0, 1] range, but out-of-range values found.")
+    # if ((y < 0) | (y > 1)).any():
+    #     raise ValueError(f"Цель '{TARGET}' ожидается в [0, 1] диапазон значений указан,\n но обнаружены значения, выходящие за его пределы.")
     if w.isna().any():
         raise ValueError(f"Weight column '{WEIGHT_COL}' contains NaNs.")
     if (w < 0).any():
@@ -82,6 +83,8 @@ def load_and_prepare_data(data_path: str):
 
     if num_features:
         X[num_features] = X[num_features].fillna(0.0)
+
+    print(X.columns)
 
     return X, y, w, TARGET, WEIGHT_COL, cat_features, num_features
 

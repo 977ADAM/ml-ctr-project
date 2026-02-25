@@ -24,5 +24,6 @@ FEATURE_SCHEMA = FeatureSchema(
         "CTR"
     ],
     target="CTR",
-    weight="Показы"
+    weight="Показы",
+    clicks="Переходы",
 )

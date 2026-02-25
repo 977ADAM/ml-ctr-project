@@ -8,7 +8,7 @@ import pandas as pd
 import streamlit as st
 from catboost import CatBoostRegressor
 
-MODEL_PATH = Path("models/model.cbm")
+MODEL_PATH = Path("models/model.cb")
 MODEL_META_PATH = Path("models/model_meta.json")
 DEFAULT_DATA_PATH = Path("data/dataset.csv")
 DEFAULT_FEATURE_COLUMNS = [
