@@ -140,22 +140,23 @@ def train_one_run(csv_path="dataset.csv", out_dir="pytorch/models"):
     click_col = "Переходы"
 
     clicks, impr = prepare_targets(df, impr_col, click_col)
-    df_tr, df_te, c_tr, c_te, n_tr, n_te = train_test_split(
+
+    df_train, df_test, c_train, c_test, n_train, n_test = train_test_split(
         df, clicks, impr, test_size=cfg.test_size, random_state=cfg.seed
     )
 
-    mappings = fit_mappings(df_tr, cat_cols)
+    mappings = fit_mappings(df_train, cat_cols)
 
-    X_tr = transform_cats(df_tr, cat_cols, mappings)
-    X_te = transform_cats(df_te, cat_cols, mappings)
+    X_tr = transform_cats(df_train, cat_cols, mappings)
+    X_te = transform_cats(df_test, cat_cols, mappings)
 
     cardinalities = [len(mappings[col]["classes"]) for col in cat_cols]
     model = CTRNet(cardinalities, emb_dim=cfg.emb_dim, hidden=cfg.hidden, dropout=cfg.dropout).to(cfg.device)
 
     opt = torch.optim.AdamW(model.parameters(), lr=cfg.lr)
 
-    tr_loader = make_loader(X_tr, c_tr, n_tr, cfg.batch_size, shuffle=True)
-    te_loader = make_loader(X_te, c_te, n_te, cfg.batch_size, shuffle=False)
+    tr_loader = make_loader(X_tr, c_train, n_train, cfg.batch_size, shuffle=True)
+    te_loader = make_loader(X_te, c_test, n_test, cfg.batch_size, shuffle=False)
 
     best_val = 1e9
     out_dir = Path(out_dir)
@@ -268,5 +269,5 @@ if __name__ == "__main__":
         {"ID кампании": 3405596, "ID баннера": 15262577, "Тип баннера": "interactive", "Тип устройства": "Компьютер", "Показы": 12596},
         {"ID кампании": 9, "ID баннера": 9, "Тип баннера": "interactive", "Тип устройства": "Смартфон", "Показы": 500},
     ]
-    preds = predict_ctr(rows, model_dir="ctr_model")
-    print("Pred CTR 2144:", preds)
+    preds = predict_ctr(rows, model_dir="pytorch/models")
+    print("Pred CTR:", preds)
