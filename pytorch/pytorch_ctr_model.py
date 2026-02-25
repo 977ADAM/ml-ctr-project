@@ -5,6 +5,7 @@ import json
 import math
 from dataclasses import dataclass
 from pathlib import Path
+import logging
 
 import numpy as np
 import pandas as pd
@@ -12,6 +13,13 @@ import torch
 import torch.nn as nn
 from sklearn.model_selection import train_test_split
 
+try:
+    from .config import Config
+except ImportError:
+    from config import Config
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+logger = logging.getLogger(__name__)
 
 # ---------- utils ----------
 def set_seed(seed: int = 42):
@@ -73,18 +81,6 @@ def binomial_nll_from_logits(logits, clicks, impr):
 
 
 # ---------- training ----------
-@dataclass
-class TrainConfig:
-    test_size: float = 0.2
-    seed: int = 42
-    emb_dim: int = 16
-    hidden: tuple = (64, 32)
-    dropout: float = 0.1
-    lr: float = 1e-3
-    batch_size: int = 128
-    epochs: int = 168
-    device: str = "cpu"
-
 def make_loader(X_cat, clicks, impr, batch_size, shuffle=True):
     ds = torch.utils.data.TensorDataset(
         torch.tensor(X_cat, dtype=torch.long),
@@ -129,7 +125,7 @@ def prepare_targets(df: pd.DataFrame, impr_col, click_col):
     return clicks, impr
 
 def train_one_run(csv_path="dataset.csv", out_dir="pytorch/models"):
-    cfg = TrainConfig()
+    cfg = Config()
     set_seed(cfg.seed)
 
     df = pd.read_csv(csv_path)
@@ -193,7 +189,7 @@ def train_one_run(csv_path="dataset.csv", out_dir="pytorch/models"):
             p = sigmoid_np(logits)
             val = binomial_logloss(k, n, p)
 
-        print(f"Epoch {epoch:02d} | train_loss={tr_loss/len(tr_loader):.6f} | val_logloss={val:.6f}")
+        logger.info(f"Epoch {epoch:02d} | train_loss={tr_loss/len(tr_loader):.6f} | val_logloss={val:.6f}")
 
         if val < best_val:
             best_val = val
@@ -212,8 +208,8 @@ def train_one_run(csv_path="dataset.csv", out_dir="pytorch/models"):
     }
     (out_dir / "meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    print(f"\nSaved to: {out_dir.resolve()}")
-    print(f"Best val logloss: {best_val:.6f}")
+    logger.info(f"Saved to: {out_dir.resolve()}")
+    logger.info(f"Best val logloss: {best_val:.6f}")
 
 
 # ---------- inference ----------
@@ -231,7 +227,6 @@ def load_model(model_dir="ctr_model", device=None):
     model.load_state_dict(torch.load(model_dir / "model.pt", map_location=device))
     model.eval()
     return model, meta, device
-
 
 def encode_row(row: dict, meta: dict) -> np.ndarray:
     x = []
@@ -270,4 +265,4 @@ if __name__ == "__main__":
         {"ID кампании": 9, "ID баннера": 9, "Тип баннера": "interactive", "Тип устройства": "Смартфон", "Показы": 500},
     ]
     preds = predict_ctr(rows, model_dir="pytorch/models")
-    print("Pred CTR:", preds)
+    logger.info(f"Pred CTR: {preds}")
