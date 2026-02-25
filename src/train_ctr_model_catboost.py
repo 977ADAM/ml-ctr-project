@@ -3,9 +3,11 @@ import mlflow.catboost
 import pandas as pd
 import json
 import numpy as np
+from pandas.api.types import is_numeric_dtype
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_squared_error, mean_absolute_error
 from catboost import CatBoostRegressor, Pool
+from typing import List
 
 
 try:
@@ -51,19 +53,32 @@ def load_and_prepare_data(data_path: str):
     if (w == 0).all():
         raise ValueError("All weights are zero. Weighted metrics are undefined.")
 
-    cat_features = FEATURE_SCHEMA.categorical
-    num_features = FEATURE_SCHEMA.numerical
+    cat_features = [c for c in FEATURE_SCHEMA.categorical if c in X.columns]
+    num_features = [c for c in FEATURE_SCHEMA.numerical if c in X.columns]
 
-    # Важно: в датасете могут отсутствовать некоторые фичи из схемы.
-    # CatBoost Pool упадёт, если передать несуществующие cat_features.
-    cat_features = [c for c in cat_features if c in X.columns]
-    num_features = [c for c in num_features if c in X.columns]
+    extra_non_numeric = [
+        c for c in X.columns
+        if c not in set(cat_features) and c not in set(num_features) and (not is_numeric_dtype(X[c]))
+    ]
+    if extra_non_numeric:
+        # Добавляем в категориальные детерминированно (по порядку колонок)
+        cat_features = cat_features + [c for c in extra_non_numeric if c not in cat_features]
+
 
     for c in cat_features:
         X[c] = X[c].astype("string").fillna("__MISSING__")
 
     for c in num_features:
         X[c] = pd.to_numeric(X[c], errors="coerce")
+
+    leftover_non_numeric = [
+        c for c in X.columns
+        if c not in set(cat_features) and c not in set(num_features) and (not is_numeric_dtype(X[c]))
+    ]
+    for c in leftover_non_numeric:
+        X[c] = X[c].astype("string").fillna("__MISSING__")
+        if c not in cat_features:
+            cat_features.append(c)
 
     if num_features:
         X[num_features] = X[num_features].fillna(0.0)
@@ -76,7 +91,7 @@ test_size = 0.15
 valid_size = 0.15
 RANDOM_SEED = 42
 
-def _cat_feature_indices(X: pd.DataFrame, cat_feature_names: list[str]) -> list[int]:
+def _cat_feature_indices(X: pd.DataFrame, cat_feature_names: List[str]) -> List[int]:
     """
     CatBoost стабильнее работает, когда cat_features переданы индексами колонок.
     Это также защищает от различий между версиями CatBoost/типами входных данных.
@@ -149,15 +164,19 @@ def experiment(
         test_pool = Pool(X_test, y_test, cat_features=cat_features_idx, weight=w_test)
         pred = model.predict(test_pool)
 
-        if np.sum(w_test) > 0:
-            wrmse = np.sqrt(np.average((y_test - pred) ** 2, weights=w_test))
-            wmae = np.average(np.abs(y_test - pred), weights=w_test)
+        y_test_np = np.asarray(y_test, dtype=float)
+        w_test_np = np.asarray(w_test, dtype=float)
+        pred_np = np.asarray(pred, dtype=float)
+
+        if np.sum(w_test_np) > 0:
+            wrmse = np.sqrt(np.average((y_test_np - pred_np) ** 2, weights=w_test_np))
+            wmae = np.average(np.abs(y_test_np - pred_np), weights=w_test_np)
         else:
             wrmse = float("nan")
             wmae = float("nan")
 
-        rmse  = np.sqrt(mean_squared_error(y_test, pred))
-        mae = mean_absolute_error(y_test, pred)
+        rmse  = np.sqrt(mean_squared_error(y_test_np, pred_np))
+        mae = mean_absolute_error(y_test_np, pred_np)
 
         print(f"RMSE (unweighted): {rmse:.6f}")
         print(f"RMSE (weighted):   {wrmse:.6f}")
