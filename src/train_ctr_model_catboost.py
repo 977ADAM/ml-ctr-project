@@ -5,7 +5,6 @@ import json
 import numpy as np
 import logging
 
-from pandas.api.types import is_numeric_dtype
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_squared_error, mean_absolute_error
 from catboost import CatBoostRegressor, Pool
@@ -42,7 +41,8 @@ def load_and_prepare_data(data_path: str) -> Tuple[pd.DataFrame, pd.Series, pd.S
     if missing:
         raise KeyError(f"Missing required columns in dataset: {missing}")
 
-    X = df.drop(columns=[TARGET, WEIGHT_COL, CLICKS_COL]).copy()
+    drop_cols = [c for c in [TARGET, WEIGHT_COL, CLICKS_COL] if c and c in df.columns]
+    X = df.drop(columns=drop_cols).copy()
     y = df[TARGET].astype(float)
     w = df[WEIGHT_COL].astype(float)
 
@@ -61,19 +61,17 @@ def load_and_prepare_data(data_path: str) -> Tuple[pd.DataFrame, pd.Series, pd.S
     cat_features = [c for c in FEATURE_SCHEMA.categorical if c in X.columns]
     num_features = [c for c in FEATURE_SCHEMA.numerical if c in X.columns]
 
-    # Всё, что не числовое и не описано в схеме как numerical — считаем категориальным (детерминированно).
-    schema_cat = set(cat_features)
-    schema_num = set(num_features)
-    inferred_cat = [
-        c for c in X.columns
-        if c not in schema_cat and c not in schema_num and (not is_numeric_dtype(X[c]))
-    ]
-    for c in inferred_cat:
-        if c not in cat_features:
-            cat_features.append(c)
-
     for c in cat_features:
         X[c] = X[c].astype("string").fillna("__MISSING__")
+
+
+    # Приводим числовые признаки к float (если в CSV они строкой/с запятыми и т.п.)
+    for c in num_features:
+        X[c] = pd.to_numeric(X[c], errors="coerce")
+    if num_features:
+        bad_num = ~np.isfinite(X[num_features].to_numpy(dtype=float, copy=False))
+        if bad_num.any():
+            raise ValueError("Numeric features contain NaN/inf after conversion. Please clean the dataset.")
 
     cat_features = list(dict.fromkeys(cat_features))
     return X, y, w, TARGET, WEIGHT_COL, cat_features, num_features
@@ -205,7 +203,7 @@ def experiment(
 
 
         # Сохранение модели в MLflow
-        mlflow.catboost.log_model(model, artifact_path="model")
+        mlflow.catboost.log_model(model, name="model")
         logger.info("Model and metadata saved.")
 
 
@@ -230,6 +228,6 @@ if __name__ == "__main__":
         train_pool=train_pool, valid_pool=valid_pool, X_test=X_test, y_test=y_test, w_test=w_test,
         cat_features=cat_features, cat_features_idx=cat_features_idx, target=TARGET, weight_col=WEIGHT_COL,
         num_features=num_features,
-        loss_function="MAE",
-        eval_metric="MAE"
+        loss_function="RMSE",
+        eval_metric="RMSE"
     )
