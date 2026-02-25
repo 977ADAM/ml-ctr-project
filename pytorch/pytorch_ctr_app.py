@@ -7,9 +7,11 @@ from pathlib import Path
 
 # Импортируем функции из вашего файла
 try:
-    from pytorch_ctr_model import load_model, encode_row, sigmoid_np
+    from pytorch_ctr_model import encode_row, sigmoid_np
+    from inference import load_model
 except ImportError:
-    from .pytorch_ctr_model import load_model, encode_row, sigmoid_np
+    from .pytorch_ctr_model import encode_row, sigmoid_np
+    from .inference import load_model
 
     
 st.set_page_config(page_title="CTR Predictor", layout="wide")
@@ -17,11 +19,13 @@ st.set_page_config(page_title="CTR Predictor", layout="wide")
 st.title("📊 CTR Model Test Interface")
 
 MODEL_DIR = "pytorch/models"
+MODEL_NAME = "modelgkf.pt"
+META_NAME = "metagkf.json"
 
 
 @st.cache_resource
 def load_ctr_model():
-    model, meta, device = load_model(model_dir=MODEL_DIR)
+    model, meta, device = load_model(model_dir=MODEL_DIR, meta_name=META_NAME, model_name=MODEL_NAME)
     return model, meta, device
 
 

@@ -15,8 +15,10 @@ from sklearn.model_selection import train_test_split, GroupKFold
 
 try:
     from .config import Config
+    from .inference import load_model
 except ImportError:
     from config import Config
+    from inference import load_model
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -353,21 +355,6 @@ def train_one_run(df, cat_cols=None, impr_col=None, click_col=None, out_dir="pyt
 
 
 # ---------- inference ----------
-def load_model(model_dir="ctr_model", device=None):
-    model_dir = Path(model_dir)
-    meta = json.loads((model_dir / "meta.json").read_text(encoding="utf-8"))
-    device = device or ("cuda" if torch.cuda.is_available() else "cpu")
-
-    model = CTRNet(
-        meta["cardinalities"],
-        emb_dim=meta["arch"]["emb_dim"],
-        hidden=tuple(meta["arch"]["hidden"]),
-        dropout=meta["arch"]["dropout"],
-    ).to(device)
-    model.load_state_dict(torch.load(model_dir / "model.pt", map_location=device))
-    model.eval()
-    return model, meta, device
-
 def encode_row(row: dict, meta: dict) -> np.ndarray:
     x = []
     for col in meta["cat_cols"]:
