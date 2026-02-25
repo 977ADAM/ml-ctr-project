@@ -12,7 +12,7 @@ class TrainConfig:
     test_size: float = 0.2
     random_state: int = 42
     mlflow_tracking_uri: str = "sqlite:///mlflow.db"
-    mlflow_experiment: str = "ctr-click-probability"
+    mlflow_experiment: str = "CTR Prediction with CatBoost"
     mlflow_run_name: str = "catboost_ctr"
     mlflow_registered_model_name: str = "ctr_click_probability_model"
 

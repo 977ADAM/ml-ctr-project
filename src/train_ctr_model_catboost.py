@@ -19,9 +19,9 @@ except ImportError:
 config = get_train_config()
 
 mlflow.set_tracking_uri(config.mlflow_tracking_uri)
-mlflow.set_experiment("CTR Prediction with CatBoost")
+mlflow.set_experiment(config.mlflow_experiment)
 
-DATA_PATH = "data/dataset.csv"
+DATA_PATH = config.data_path
 
 df = pd.read_csv(DATA_PATH)
 
