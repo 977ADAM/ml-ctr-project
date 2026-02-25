@@ -3,6 +3,7 @@ import mlflow.catboost
 import pandas as pd
 import json
 import numpy as np
+import logging
 from pandas.api.types import is_numeric_dtype
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_squared_error, mean_absolute_error
@@ -19,6 +20,9 @@ except ImportError:
 
 
 config = get_train_config()
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+logger = logging.getLogger(__name__)
 
 mlflow.set_tracking_uri(config.mlflow_tracking_uri)
 mlflow.set_experiment(config.mlflow_experiment)
@@ -55,7 +59,7 @@ def load_and_prepare_data(data_path: str):
         raise ValueError("All weights are zero. Weighted metrics are undefined.")
 
     cat_features = [c for c in FEATURE_SCHEMA.categorical if c in X.columns]
-    num_features = [c for c in FEATURE_SCHEMA.numerical if c in X.columns]
+    num_features = FEATURE_SCHEMA.numerical
 
     extra_non_numeric = [
         c for c in X.columns
@@ -65,12 +69,8 @@ def load_and_prepare_data(data_path: str):
         # Добавляем в категориальные детерминированно (по порядку колонок)
         cat_features = cat_features + [c for c in extra_non_numeric if c not in cat_features]
 
-
     for c in cat_features:
         X[c] = X[c].astype("string").fillna("__MISSING__")
-
-    for c in num_features:
-        X[c] = pd.to_numeric(X[c], errors="coerce")
 
     leftover_non_numeric = [
         c for c in X.columns
@@ -80,11 +80,6 @@ def load_and_prepare_data(data_path: str):
         X[c] = X[c].astype("string").fillna("__MISSING__")
         if c not in cat_features:
             cat_features.append(c)
-
-    if num_features:
-        X[num_features] = X[num_features].fillna(0.0)
-
-    print(X.columns)
 
     return X, y, w, TARGET, WEIGHT_COL, cat_features, num_features
 
@@ -114,6 +109,7 @@ def experiment(
     w_test,
     cat_features,
     cat_features_idx,
+    num_features,
     target,
     weight_col,
     loss_function=None,
@@ -144,6 +140,7 @@ def experiment(
         mlflow.log_param("cat_features_idx", json.dumps(cat_features_idx, ensure_ascii=False))
         mlflow.log_param("target", target)
         mlflow.log_param("weight_col", weight_col)
+        mlflow.log_param("num_features", json.dumps(num_features, ensure_ascii=False))
 
         model_kwargs = dict(
             iterations=2000,
@@ -181,11 +178,11 @@ def experiment(
         rmse  = np.sqrt(mean_squared_error(y_test_np, pred_np))
         mae = mean_absolute_error(y_test_np, pred_np)
 
-        print(f"RMSE (unweighted): {rmse:.6f}")
-        print(f"RMSE (weighted):   {wrmse:.6f}")
-        print(f"MAE  (unweighted): {mae:.6f}")
-        print(f"MAE  (weighted):   {wmae:.6f}")
-        print(f"Best iteration:    {model.get_best_iteration()}")
+        logger.info("RMSE (unweighted): %.6f", rmse)
+        logger.info("RMSE (weighted):   %.6f", wrmse)
+        logger.info("MAE  (unweighted): %.6f", mae)
+        logger.info("MAE  (weighted):   %.6f", wmae)
+        logger.info("Best iteration:    %s", model.get_best_iteration())
 
 
         mlflow.log_metric("rmse", rmse)
@@ -209,7 +206,7 @@ def experiment(
 
         # Сохранение модели в MLflow
         mlflow.catboost.log_model(model, artifact_path="model")
-        print("Model and metadata saved.")
+        logger.info("Model and metadata saved.")
 
 
 
@@ -232,14 +229,7 @@ if __name__ == "__main__":
         run_name="catboost_ctr_model_MAE",
         train_pool=train_pool, valid_pool=valid_pool, X_test=X_test, y_test=y_test, w_test=w_test,
         cat_features=cat_features, cat_features_idx=cat_features_idx, target=TARGET, weight_col=WEIGHT_COL,
+        num_features=num_features,
         loss_function="MAE",
         eval_metric="MAE"
-    )
-
-    experiment(
-        run_name="catboost_ctr_model_RMSE",
-        train_pool=train_pool, valid_pool=valid_pool, X_test=X_test, y_test=y_test, w_test=w_test,
-        cat_features=cat_features, cat_features_idx=cat_features_idx, target=TARGET, weight_col=WEIGHT_COL,
-        loss_function="RMSE",
-        eval_metric="RMSE"
     )
