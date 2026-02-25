@@ -81,6 +81,37 @@ def binomial_nll_from_logits(logits, clicks, impr):
     nll = clicks * torch.nn.functional.softplus(-logits) + (impr - clicks) * torch.nn.functional.softplus(logits)
     return nll.sum() / impr.sum()  # среднее на 1 показ
 
+def auc_from_aggregates(clicks: np.ndarray, impr: np.ndarray, score: np.ndarray) -> float:
+    pos_w = clicks.astype(np.float64)
+    neg_w = (impr - clicks).astype(np.float64)
+
+    total_pos = pos_w.sum()
+    total_neg = neg_w.sum()
+    if total_pos == 0 or total_neg == 0:
+        return float("nan")
+
+    order = np.argsort(score, kind="mergesort")
+    s = score[order]
+    p = pos_w[order]
+    n = neg_w[order]
+
+    auc_num = 0.0
+    cum_neg = 0.0
+    i = 0
+
+    while i < len(s):
+        j = i
+        while j < len(s) and s[j] == s[i]:
+            j += 1
+
+        pos_block = p[i:j].sum()
+        neg_block = n[i:j].sum()
+
+        auc_num += pos_block * (cum_neg + 0.5 * neg_block)
+        cum_neg += neg_block
+        i = j
+
+    return auc_num / (total_pos * total_neg)
 
 # ---------- training ----------
 def make_loader(X_cat, clicks, impr, batch_size, shuffle=True):
@@ -205,7 +236,7 @@ def train_with_groupkfold(csv_path="dataset.csv", out_dir="pytorch/models_gkf", 
         .astype(str)
         .agg("_".join, axis=1)
         .values
-    )   
+    )
 
     gkf = GroupKFold(n_splits=n_splits)
 
@@ -273,6 +304,8 @@ def train_with_groupkfold(csv_path="dataset.csv", out_dir="pytorch/models_gkf", 
     logger.info(f"Saved best overall to: {out_dir.resolve()}")
     logger.info(f"Best overall val logloss: {best_overall:.6f}")
 
+
+
 def train_one_run(df, cat_cols=None, impr_col=None, click_col=None, out_dir="pytorch/models"):
     cfg = Config()
     set_seed(cfg.seed)
@@ -297,6 +330,7 @@ def train_one_run(df, cat_cols=None, impr_col=None, click_col=None, out_dir="pyt
     te_loader = make_loader(X_te, c_test, n_test, cfg.batch_size, shuffle=False)
 
     best_val = 1e9
+    patience_counter = 0
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -329,13 +363,27 @@ def train_one_run(df, cat_cols=None, impr_col=None, click_col=None, out_dir="pyt
             k = np.concatenate(all_k)
             n = np.concatenate(all_n)
             p = sigmoid_np(logits)
-            val = binomial_logloss(k, n, p)
+            val_logloss = binomial_logloss(k, n, p)
+            val_auc = auc_from_aggregates(k, n, p)
 
-        logger.info(f"Epoch {epoch:02d} | train_loss={tr_loss/len(tr_loader):.6f} | val_logloss={val:.6f}")
+        logger.info(
+            f"Epoch {epoch:02d}\n"
+            f"train_loss = {tr_loss/len(tr_loader):.6f}\n"
+            f"val_logloss = {val_logloss:.6f}\n"
+            f"val_auc = {val_auc:.6f}\n"
+            "-----------------------------------------------------"
+        )
 
-        if val < best_val:
-            best_val = val
+        if val_logloss < best_val - cfg.early_stopping_min_delta:
+            best_val = val_logloss
+            patience_counter = 0
             torch.save(model.state_dict(), out_dir / "model.pt")
+        else:
+            patience_counter += 1
+
+        if patience_counter >= cfg.early_stopping_patience:
+            logger.info(f"Досрочная остановка срабатывает в момент начала эпохи. {epoch}")
+            break
 
     # сохраняем метаданные (маппинги категорий + список колонок)
     # value_to_idx в json не пишем (он восстановится из classes)
@@ -396,7 +444,7 @@ if __name__ == "__main__":
         out_dir="pytorch/models"
     )
 
-    train_with_groupkfold(csv_path="data/dataset.csv", out_dir="pytorch/models", n_splits=5, group_col=["ID кампании", "ID баннера"])
+    # train_with_groupkfold(csv_path="data/dataset.csv", out_dir="pytorch/models", n_splits=5, group_col=["ID кампании", "ID баннера"])
 
     # Пример инференса:
     rows = [
