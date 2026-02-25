@@ -128,7 +128,7 @@ def prepare_targets(df: pd.DataFrame, impr_col, click_col):
     #     raise ValueError("Найдены некорректные Переходы (clicks) относительно Показы (impr).")
     return clicks, impr
 
-def train_one_run(csv_path="dataset.csv", out_dir="ctr_model"):
+def train_one_run(csv_path="dataset.csv", out_dir="pytorch/models"):
     cfg = TrainConfig()
     set_seed(cfg.seed)
 
@@ -261,7 +261,7 @@ def predict_ctr(rows, model_dir="ctr_model"):
 if __name__ == "__main__":
     # Пример запуска обучения:
     # python train_ctr_agg.py
-    train_one_run(csv_path="data/dataset.csv", out_dir="ctr_model")
+    train_one_run(csv_path="data/dataset.csv", out_dir="pytorch/models")
 
     # Пример инференса:
     rows = [
