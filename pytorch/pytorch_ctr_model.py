@@ -69,6 +69,9 @@ def train_one_fold(df_train, df_val, cat_cols, impr_col, click_col, cfg):
     cat_train, num_train = prepare_targets(df_train, impr_col, click_col)
     cat_valid, num_valid = prepare_targets(df_val, impr_col, click_col)
 
+    out_dir = Path("pytorch/models")
+    out_dir.mkdir(parents=True, exist_ok=True)
+
     # mappings только по train-fold
     mappings = fit_mappings(df_train, cat_cols)
 
@@ -111,13 +114,20 @@ def train_one_fold(df_train, df_val, cat_cols, impr_col, click_col, cfg):
             k = np.concatenate(all_k)
             n = np.concatenate(all_n)
             p = sigmoid_np(logits)
-            val = binomial_logloss(k, n, p)
+            val_logloss = binomial_logloss(k, n, p)
 
-        logger.info(f"Epoch {epoch:02d} | train_loss={tr_loss/len(tr_loader):.6f} | val_logloss={val:.6f}")
+        logger.info(f"Epoch {epoch:02d} | train_loss={tr_loss/len(tr_loader):.6f} | val_logloss={val_logloss:.6f}")
 
-        if val < best_val:
-            best_val = val
-            best_state = copy.deepcopy(model.state_dict())
+        if val_logloss < best_val - cfg.early_stopping_min_delta:
+            best_val = val_logloss
+            patience_counter = 0
+            torch.save(model.state_dict(), out_dir / "modelgkf.pt")
+        else:
+            patience_counter += 1
+
+        if patience_counter >= cfg.early_stopping_patience:
+            logger.info(f"Досрочная остановка срабатывает в момент начала эпохи. {epoch}")
+            break
 
     # вернём всё, что нужно для сохранения/инференса
     return best_val, best_state, mappings, cardinalities
@@ -127,7 +137,7 @@ def train_with_groupkfold(
         cat_cols=None,
         impr_col=None,
         click_col=None,
-        out_dir="pytorch/models_gkf",
+        out_dir="pytorch/models",
         n_splits=5,
         group_col=["ID кампании", "ID баннера"]
     ):

@@ -9,7 +9,7 @@ except ImportError:
 
 
 
-def load_model(model_dir="pytorch/models", meta_name="meta.json", model_name="model.pt", device="cpu"):
+def load_model(model_dir="pytorch/models", meta_name="metagkf.json", model_name="modelgkf.pt", device="cpu"):
     model_dir = Path(model_dir)
     meta = json.loads((model_dir / meta_name).read_text(encoding="utf-8"))
     device = torch.device(device)
