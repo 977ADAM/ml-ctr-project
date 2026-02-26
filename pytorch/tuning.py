@@ -57,6 +57,7 @@ def suggest_hparams(trial: optuna.Trial, base_cfg: Config) -> Config:
         dropout=dropout,
         lr=lr,
         batch_size=batch_size,
+        weight_decay=weight_decay,
     )
 
 
@@ -157,8 +158,8 @@ class Objective:
 
     def __call__(self, trial: optuna.Trial) -> float:
         # 1. Сэмплируем гиперпараметры
-        cfg = suggest_hparams(trial, self.base_cfg)
-        weight_decay = float(trial.user_attrs["weight_decay"])
+        cfg = self.suggest_hparams(trial)
+        weight_decay = cfg.weight_decay
         set_seed(cfg.seed)
         # 2. Формируем группы для GroupKFold
         groups = (
@@ -187,6 +188,7 @@ class Objective:
                 weight_decay=weight_decay,
                 trial=None,
             )
+
             fold_scores.append(best_valid)
 
             # 4. Репортим mean-to-date для pruning
@@ -199,6 +201,24 @@ class Objective:
                 )
         
         return float(np.mean(fold_scores))
+    
+    def suggest_hparams(self, trial: optuna.Trial) -> Config:
+        emb_dim = int(trial.suggest_categorical("emb_dim", [8, 16, 32, 64]))
+        hidden = _hidden_from_trial(trial)
+        dropout = float(trial.suggest_float("dropout", 0.0, 0.5))
+        lr = float(trial.suggest_float("lr", 1e-4, 3e-3, log=True))
+        batch_size = int(trial.suggest_categorical("batch_size", [64, 128, 256, 512]))
+        weight_decay = float(trial.suggest_float("weight_decay", 1e-6, 1e-2, log=True))
+
+        return replace(
+            self.base_cfg,
+            emb_dim=emb_dim,
+            hidden=hidden,
+            dropout=dropout,
+            lr=lr,
+            batch_size=batch_size,
+            weight_decay=weight_decay,
+        )
 
 
 
