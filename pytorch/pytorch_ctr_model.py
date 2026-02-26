@@ -279,7 +279,12 @@ def train_one_run(
 
     cardinalities = [len(mappings[col]["classes"]) for col in cat_cols]
 
-    with mlflow.start_run(run_name='DeepFM') as run:
+    with mlflow.start_run(run_name='DeepFM', nested=True):
+        mlflow.log_params({
+            "n_train": len(df_train),
+            "n_test": len(df_test),
+            "n_features": len(cat_cols),
+        })
         mlflow.log_params({
             "emb_dim": cfg.emb_dim,
             "hidden": cfg.hidden,
@@ -393,6 +398,8 @@ def train_one_run(
 
         logger.info(f"Saved to: {out_dir.resolve()}")
         logger.info(f"Best val logloss: {best_val:.6f}")
+
+    
 
 # ---------- inference ----------
 @torch.no_grad()
