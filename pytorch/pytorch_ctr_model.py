@@ -8,20 +8,19 @@ import copy
 import numpy as np
 import pandas as pd
 import torch
-import optuna
 from sklearn.model_selection import train_test_split, GroupKFold
 
 try:
     from .config import Config
     from .inference import load_model, encode_row
-    from .model import CTRNet
+    from .model import CTRNet, DeepFM
     from .utils import (set_seed, sigmoid_np, prepare_targets,
                     binomial_logloss, binomial_nll_from_logits,
                     make_loader, fit_mappings, transform_cats)
 except ImportError:
     from config import Config
     from inference import load_model, encode_row
-    from model import CTRNet
+    from model import CTRNet, DeepFM
     from utils import (set_seed, sigmoid_np, prepare_targets,
                     binomial_logloss, binomial_nll_from_logits,
                     make_loader, fit_mappings, transform_cats)
@@ -244,7 +243,8 @@ def train_one_run(
     X_te = transform_cats(df_test, cat_cols, mappings)
 
     cardinalities = [len(mappings[col]["classes"]) for col in cat_cols]
-    model = CTRNet(cardinalities, emb_dim=cfg.emb_dim, hidden=cfg.hidden, dropout=cfg.dropout).to(cfg.device)
+    # model = CTRNet(cardinalities, emb_dim=cfg.emb_dim, hidden=cfg.hidden, dropout=cfg.dropout).to(cfg.device)
+    model = DeepFM(cardinalities, emb_dim=cfg.emb_dim, hidden=cfg.hidden, dropout=cfg.dropout).to(cfg.device)
 
     opt = torch.optim.AdamW(model.parameters(), lr=cfg.lr)
 
@@ -323,7 +323,6 @@ def train_one_run(
     logger.info(f"Saved to: {out_dir.resolve()}")
     logger.info(f"Best val logloss: {best_val:.6f}")
 
-
 # ---------- inference ----------
 @torch.no_grad()
 def predict_ctr(rows):
@@ -347,22 +346,22 @@ if __name__ == "__main__":
     impr_col = "Показы"
     click_col = "Переходы"
 
-    # train_one_run(
-    #     df,
-    #     cat_cols=cat_cols,
-    #     impr_col=impr_col,
-    #     click_col=click_col,
-    #     out_dir="pytorch/models"
-    # )
-
-    train_with_groupkfold(
+    train_one_run(
         df,
         cat_cols=cat_cols,
         impr_col=impr_col,
         click_col=click_col,
-        out_dir="pytorch/models",
-        n_splits=5,
-        group_col=["ID кампании", "ID баннера"])
+        out_dir="pytorch/models"
+    )
+
+    # train_with_groupkfold(
+    #     df,
+    #     cat_cols=cat_cols,
+    #     impr_col=impr_col,
+    #     click_col=click_col,
+    #     out_dir="pytorch/models",
+    #     n_splits=5,
+    #     group_col=["ID кампании", "ID баннера"])
 
     rows = [
         {"ID кампании": 3405596, "ID баннера": 15262577, "Тип баннера": "interactive", "Тип устройства": "Компьютер", "Показы": 12596},

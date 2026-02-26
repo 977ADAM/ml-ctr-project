@@ -9,7 +9,7 @@ class Config:
     seed: int = 42
     emb_dim: int = 8
     hidden: tuple = (256, 512)
-    dropout: float = 0.1
+    dropout: float = 0.2
     lr: float = 1e-3
     batch_size: int = 256
     epochs: int = 150
@@ -20,6 +20,6 @@ class Config:
     early_stopping_min_delta = 1e-4
 
     MODEL_DIR = "pytorch/models"
-    MODEL_NAME = "modelgkf.pt"
-    META_NAME = "metagkf.json"
+    MODEL_NAME = "model.pt"
+    META_NAME = "meta.json"
     DATA_PATH = "data/dataset.csv"

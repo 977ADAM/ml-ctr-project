@@ -4,10 +4,10 @@ import torch
 import numpy as np
 
 try:
-    from .model import CTRNet
+    from .model import CTRNet, DeepFM
     from .config import Config
 except ImportError:
-    from model import CTRNet
+    from model import CTRNet, DeepFM
     from config import Config
 
 
@@ -17,7 +17,7 @@ def load_model(model_dir=Config.MODEL_DIR, meta_name=Config.META_NAME, model_nam
     meta = json.loads((model_dir / meta_name).read_text(encoding="utf-8"))
     device = torch.device(device)
 
-    model = CTRNet(
+    model = DeepFM(
         meta["cardinalities"],
         emb_dim=meta["arch"]["emb_dim"],
         hidden=tuple(meta["arch"]["hidden"]),

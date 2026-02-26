@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import torch
+import matplotlib.pyplot as plt
 
 # Импортируем функции из вашего файла
 try:
@@ -92,7 +93,14 @@ if mode == "Batch CSV":
             st.dataframe(df)
 
             st.subheader("📈 Распределение CTR")
-            st.bar_chart(df["Predicted_CTR"])
+
+            fig, ax = plt.subplots()
+            ax.hist(df["Predicted_CTR"], bins=30)
+            ax.set_xlabel("CTR")
+            ax.set_ylabel("Количество")
+            ax.set_title("Гистограмма распределения CTR")
+
+            st.pyplot(fig)
 
             csv = df.to_csv(index=False).encode("utf-8")
             st.download_button(
