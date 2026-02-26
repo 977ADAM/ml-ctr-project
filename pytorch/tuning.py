@@ -31,7 +31,8 @@ except ImportError:
                     make_loader, fit_mappings, transform_cats)
 
 
-
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+logger = logging.getLogger("optuna_tuner")
 
 class Objective:
 
@@ -218,6 +219,83 @@ def objective_gkf(
 
     return float(np.mean(fold_scores))
 
+def _mappings_to_save(mappings: Dict[str, Dict[str, object]]) -> Dict[str, Dict[str, object]]:
+    return {k: {"classes": v["classes"]} for k, v in mappings.items()}
+
+def retrain_and_save_best_gkf(
+    df: pd.DataFrame,
+    cat_cols: Sequence[str],
+    impr_col: str,
+    click_col: str,
+    out_dir: str,
+    cfg: Config,
+    weight_decay: float,
+) -> Dict[str, object]:
+    """
+    For your inference pipeline, you usually save ONE "best overall" model with mappings fitted on training data.
+    Here, we fit mappings on FULL data and train ONE final model (not per-fold) and save as modelgkf.pt/metagkf.json
+    to keep your current inference naming consistent.
+    """
+    out_dir_p = Path(out_dir)
+    out_dir_p.mkdir(parents=True, exist_ok=True)
+
+    set_seed(cfg.seed)
+
+    clicks, impr = prepare_targets(df, impr_col, click_col)
+    mappings = fit_mappings(df, cat_cols)
+    X = transform_cats(df, cat_cols, mappings)
+    cardinalities = [len(mappings[col]["classes"]) for col in cat_cols]
+
+    device = torch.device(cfg.device)
+    model = CTRNet(cardinalities, emb_dim=cfg.emb_dim, hidden=cfg.hidden, dropout=cfg.dropout).to(device)
+    opt = torch.optim.AdamW(model.parameters(), lr=cfg.lr, weight_decay=weight_decay)
+
+    loader = make_loader(X, clicks, impr, cfg.batch_size, shuffle=True)
+
+    model.train()
+    for epoch in range(1, cfg.epochs + 1):
+        epoch_loss = 0.0
+        for xb, kb, nb in loader:
+            xb, kb, nb = xb.to(device), kb.to(device), nb.to(device)
+            opt.zero_grad(set_to_none=True)
+            logits = model(xb)
+            loss = binomial_nll_from_logits(logits, kb, nb)
+            loss.backward()
+            opt.step()
+            epoch_loss += float(loss.item())
+        if epoch % 10 == 0:
+            logger.info(f"[retrain] epoch={epoch} loss={epoch_loss/len(loader):.6f}")
+
+    torch.save(model.state_dict(), out_dir_p / "modelgkf.pt")
+    meta = {
+        "cat_cols": list(cat_cols),
+        "impr_col": impr_col,
+        "click_col": click_col,
+        "mappings": _mappings_to_save(mappings),
+        "cardinalities": cardinalities,
+        "arch": {"emb_dim": cfg.emb_dim, "hidden": list(cfg.hidden), "dropout": cfg.dropout},
+        "tuning": {"lr": cfg.lr, "batch_size": cfg.batch_size, "weight_decay": weight_decay},
+        "cv": {"final_train": "full_data_single_model"},
+    }
+    (out_dir_p / "metagkf.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+    return meta
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -227,18 +305,20 @@ def objective_gkf(
 
 # ---------------- run tuning ----------------
 def run_optuna(
-        df: pd.DataFrame,
-        cat_cols: Sequence[str],
-        impr_col: str,
         mode: str,
-        click_col: str,
+        out_dir: str,
         study_name: str = "ctrnet_optuna",
-        group_cols: Optional[Sequence[str]] = None,
         n_splits: int = 5,
         trials: int = 50,
         timeout: Optional[int] = None,
     ):
+    df = pd.read_csv("data/dataset.csv")
     base_cfg = Config()
+
+    cat_cols = ["ID кампании", "ID баннера", "Тип баннера", "Тип устройства"]
+    impr_col = "Показы"
+    click_col = "Переходы"
+    group_cols = ["ID кампании", "ID баннера"]
 
     pruner = MedianPruner(n_startup_trials=5, n_warmup_steps=10, interval_steps=1)
     study = optuna.create_study(
@@ -268,8 +348,35 @@ def run_optuna(
         "n_splits": n_splits
     }
 
+    out_dir_p = Path(out_dir)
+    out_dir_p.mkdir(parents=True, exist_ok=True)
+    (out_dir_p / "optuna_study_best.json").write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
 
+    tuned_cfg = replace(
+        base_cfg,
+        emb_dim=int(best_params["emb_dim"]),
+        hidden=tuple(int(best_params[k]) for k in sorted([k for k in best_params if k.startswith("h")], key=lambda s: int(s[1:]))),
+        dropout=float(best_params["dropout"]),
+        lr=float(best_params["lr"]),
+        batch_size=int(best_params["batch_size"]),
+    )
 
+    if len(tuned_cfg.hidden) == 0:
+        tuned_cfg = replace(tuned_cfg, hidden=(64, 32))
 
+    retrain_and_save_best_gkf(df, cat_cols, impr_col, click_col, out_dir, tuned_cfg, best_params["weight_decay"])
 
+    logger.info(f"Best logloss: {result['best_value']:.6f}")
+    logger.info(f"Best params: {json.dumps(best_params, ensure_ascii=False)}")
+    logger.info(f"Saved artifacts to: {out_dir_p.resolve()}")
 
+    return result
+
+if __name__ == "__main__":
+    run_optuna(
+        mode="gkf",
+        out_dir="pytorch/optuna_results/gkf",
+        n_splits=5,
+        trials=80,
+        timeout=None,
+    )
