@@ -1,0 +1,261 @@
+from __future__ import annotations
+
+import argparse
+import copy
+import json
+import logging
+import math
+from dataclasses import replace
+from pathlib import Path
+from typing import Dict, List, Sequence, Tuple, Optional
+
+import numpy as np
+import pandas as pd
+import torch
+import optuna
+from optuna.pruners import MedianPruner
+from sklearn.model_selection import train_test_split, GroupKFold
+
+try:
+    from .config import Config
+    from .model import CTRNet
+    from .utils import set_seed, sigmoid_np
+except ImportError:
+    from config import Config
+    from model import CTRNet
+    from utils import set_seed, sigmoid_np
+
+class Objective:
+
+    def __init__(self, df, cat_cols, impr_col, click_col,
+                 base_cfg, group_cols, n_splits):
+        self.df = df
+        self.cat_cols = cat_cols
+        self.impr_col = impr_col
+        self.click_col = click_col
+        self.base_cfg = base_cfg
+        self.group_cols = group_cols
+        self.n_splits = n_splits
+
+    def __call__(self, trial):
+        return objective_gkf(
+            trial,
+            self.df,
+            self.cat_cols,
+            self.impr_col,
+            self.click_col,
+            self.base_cfg,
+            self.group_cols,
+            self.n_splits
+        )
+
+
+
+
+
+
+
+
+
+
+
+def suggest_hparams(trial: optuna.Trial, base_cfg: Config) -> Config:
+    """
+    Return a new Config with tuned params (Config is frozen, so we use dataclasses.replace).
+    """
+    emb_dim = int(trial.suggest_categorical("emb_dim", [8, 16, 32, 64]))
+    hidden = _hidden_from_trial(trial)
+    dropout = float(trial.suggest_float("dropout", 0.0, 0.5))
+    lr = float(trial.suggest_float("lr", 1e-4, 3e-3, log=True))
+    batch_size = int(trial.suggest_categorical("batch_size", [64, 128, 256, 512]))
+    # store separately (not part of Config) via trial.user_attrs
+    weight_decay = float(trial.suggest_float("weight_decay", 1e-6, 1e-2, log=True))
+    trial.set_user_attr("weight_decay", weight_decay)
+
+    return replace(
+        base_cfg,
+        emb_dim=emb_dim,
+        hidden=hidden,
+        dropout=dropout,
+        lr=lr,
+        batch_size=batch_size,
+    )
+
+
+
+
+def _train_eval_one_split(
+    df_train: pd.DataFrame,
+    df_val: pd.DataFrame,
+    cat_cols: Sequence[str],
+    impr_col: str,
+    click_col: str,
+    cfg: Config,
+    weight_decay: float,
+    trial: Optional[optuna.Trial] = None,
+) -> Tuple[float, Dict[str, torch.Tensor], Dict[str, Dict[str, object]], List[int]]:
+    """
+    Train on df_train, evaluate on df_val.
+    Returns: best_val_logloss, best_state_dict, mappings, cardinalities
+    """
+    clicks_tr, impr_tr = prepare_targets(df_train, impr_col, click_col)
+    clicks_va, impr_va = prepare_targets(df_val, impr_col, click_col)
+
+    mappings = fit_mappings(df_train, cat_cols)
+    X_tr = transform_cats(df_train, cat_cols, mappings)
+    X_va = transform_cats(df_val, cat_cols, mappings)
+
+    cardinalities = [len(mappings[col]["classes"]) for col in cat_cols]
+
+    device = torch.device(cfg.device)
+    model = CTRNet(cardinalities, emb_dim=cfg.emb_dim, hidden=cfg.hidden, dropout=cfg.dropout).to(device)
+    opt = torch.optim.AdamW(model.parameters(), lr=cfg.lr, weight_decay=weight_decay)
+
+    tr_loader = make_loader(X_tr, clicks_tr, impr_tr, cfg.batch_size, shuffle=True)
+    va_loader = make_loader(X_va, clicks_va, impr_va, cfg.batch_size, shuffle=False)
+
+    best_val = float("inf")
+    best_state = None
+    patience = 0
+
+    for epoch in range(1, cfg.epochs + 1):
+        model.train()
+        for xb, kb, nb in tr_loader:
+            xb, kb, nb = xb.to(device), kb.to(device), nb.to(device)
+            opt.zero_grad(set_to_none=True)
+            logits = model(xb)
+            loss = binomial_nll_from_logits(logits, kb, nb)
+            loss.backward()
+            opt.step()
+
+        # eval
+        model.eval()
+        with torch.no_grad():
+            all_logits, all_k, all_n = [], [], []
+            for xb, kb, nb in va_loader:
+                xb = xb.to(device)
+                all_logits.append(model(xb).detach().cpu().numpy())
+                all_k.append(kb.numpy())
+                all_n.append(nb.numpy())
+
+            logits = np.concatenate(all_logits)
+            k = np.concatenate(all_k)
+            n = np.concatenate(all_n)
+            p = sigmoid_np(logits)
+            val = binomial_logloss(k, n, p)
+
+        # report to optuna
+        if trial is not None:
+            trial.report(val, step=epoch)
+            if trial.should_prune():
+                raise optuna.TrialPruned(f"Pruned at epoch={epoch} val_logloss={val:.6f}")
+
+        # early stopping
+        improved = val < (best_val - cfg.early_stopping_min_delta)
+        if improved:
+            best_val = val
+            best_state = copy.deepcopy(model.state_dict())
+            patience = 0
+        else:
+            patience += 1
+            if patience >= cfg.early_stopping_patience:
+                break
+
+    assert best_state is not None
+    return best_val, best_state, mappings, cardinalities
+
+
+
+
+
+def objective_gkf(
+    trial: optuna.Trial,
+    df: pd.DataFrame,
+    cat_cols: Sequence[str],
+    impr_col: str,
+    click_col: str,
+    base_cfg: Config,
+    group_cols: Sequence[str],
+    n_splits: int,
+) -> float:
+    cfg = suggest_hparams(trial, base_cfg)
+    weight_decay = float(trial.user_attrs["weight_decay"])
+
+    set_seed(cfg.seed)
+
+    groups = df[list(group_cols)].astype(str).agg("_".join, axis=1).values
+    gkf = GroupKFold(n_splits=n_splits)
+
+    fold_scores: List[float] = []
+    # One shared trial, report mean-to-date (so pruning can act early)
+    for fold, (tr_idx, va_idx) in enumerate(gkf.split(df, y=None, groups=groups), start=1):
+        df_tr = df.iloc[tr_idx].reset_index(drop=True)
+        df_va = df.iloc[va_idx].reset_index(drop=True)
+
+        best_val, *_ = _train_eval_one_split(
+            df_tr, df_va, cat_cols, impr_col, click_col, cfg, weight_decay, trial=None  # per-epoch pruning handled below
+        )
+        fold_scores.append(best_val)
+
+        mean_so_far = float(np.mean(fold_scores))
+        trial.report(mean_so_far, step=fold)
+        if trial.should_prune():
+            raise optuna.TrialPruned(f"Pruned at fold={fold} mean_logloss={mean_so_far:.6f}")
+
+    return float(np.mean(fold_scores))
+
+
+
+
+
+
+
+
+# ---------------- run tuning ----------------
+def run_optuna(
+        df: pd.DataFrame,
+        cat_cols: Sequence[str],
+        impr_col: str,
+        mode: str,
+        click_col: str,
+        study_name: str = "ctrnet_optuna",
+        group_cols: Optional[Sequence[str]] = None,
+        n_splits: int = 5,
+        trials: int = 50,
+        timeout: Optional[int] = None,
+    ):
+    base_cfg = Config()
+
+    pruner = MedianPruner(n_startup_trials=5, n_warmup_steps=10, interval_steps=1)
+    study = optuna.create_study(
+        study_name=study_name,
+        direction="minimize",
+        pruner=pruner,
+        load_if_exists=True,
+    )
+
+    objective = Objective(df, cat_cols, impr_col, click_col,
+                      base_cfg, group_cols, n_splits)
+    
+    study.optimize(objective, n_trials=trials, timeout=timeout,
+                gc_after_trial=True, show_progress_bar=False)
+    
+    best = study.best_trial
+    best_params = dict(best.params)
+    best_params["weight_decay"] = float(best.user_attrs.get("weight_decay", 0.0))
+
+    result = {
+        "best_value": float(best.value),
+        "best_params": best_params,
+        "study_name": study.study_name,
+        "n_trials": len(study.trials),
+        "mode": mode,
+        "group_cols": list(group_cols) if group_cols else None,
+        "n_splits": n_splits if mode == "gkf" else None,
+    }
+
+
+
+
+
+

@@ -15,25 +15,17 @@ try:
     from .config import Config
     from .inference import load_model
     from .model import CTRNet
+    from .utils import set_seed, sigmoid_np, prepare_targets
 except ImportError:
     from config import Config
     from inference import load_model
     from model import CTRNet
+    from utils import set_seed, sigmoid_np, prepare_targets
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 
 # ---------- utils ----------
-def set_seed(seed: int = 42):
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
-
-
-def sigmoid_np(x: np.ndarray) -> np.ndarray:
-    return 1 / (1 + np.exp(-x))
-
-
 def binomial_logloss(clicks: np.ndarray, impr: np.ndarray, p: np.ndarray, eps: float = 1e-8) -> float:
     p = np.clip(p, eps, 1 - eps)
     ll = clicks * np.log(p) + (impr - clicks) * np.log(1 - p)
@@ -114,17 +106,6 @@ def transform_cats(df: pd.DataFrame, cat_cols, mappings) -> np.ndarray:
         # unknown -> 0
         X_cat[:, j] = np.fromiter((m.get(v, 0) for v in vals), dtype=np.int64, count=len(vals))
     return X_cat
-
-def prepare_targets(df, impr_col, click_col):
-    impr = df[impr_col].astype(np.float32).values
-    clicks = df[click_col].astype(np.float32).values
-
-    # базовые проверки (лучше держать включёнными)
-    # if np.any(impr <= 0):
-    #     raise ValueError("Найдены строки с Показы <= 0 — их нужно удалить/исправить.")
-    # if np.any(clicks < 0) or np.any(clicks > impr):
-    #     raise ValueError("Найдены некорректные Переходы (clicks) относительно Показы (impr).")
-    return clicks, impr
 
 def train_one_fold(df_train, df_val, cat_cols, impr_col, click_col, cfg):
     # targets
