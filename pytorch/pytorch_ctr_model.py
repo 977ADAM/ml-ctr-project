@@ -63,7 +63,6 @@ def auc_from_aggregates(clicks: np.ndarray, impr: np.ndarray, score: np.ndarray)
     return auc_num / (total_pos * total_neg)
 
 # ---------- training ----------
-
 def train_one_fold(df_train, df_val, cat_cols, impr_col, click_col, cfg):
     # targets
     cat_train, num_train = prepare_targets(df_train, impr_col, click_col)
@@ -86,6 +85,7 @@ def train_one_fold(df_train, df_val, cat_cols, impr_col, click_col, cfg):
     va_loader = make_loader(X_valid, cat_valid, num_valid, cfg.batch_size, shuffle=False)
 
     best_val = 1e9
+    patience_counter = 0
     best_state = None
 
     for epoch in range(1, cfg.epochs + 1):
@@ -121,13 +121,16 @@ def train_one_fold(df_train, df_val, cat_cols, impr_col, click_col, cfg):
         if val_logloss < best_val - cfg.early_stopping_min_delta:
             best_val = val_logloss
             patience_counter = 0
-            torch.save(model.state_dict(), out_dir / "modelgkf.pt")
+            best_state = copy.deepcopy(model.state_dict())
         else:
             patience_counter += 1
 
         if patience_counter >= cfg.early_stopping_patience:
-            logger.info(f"Досрочная остановка срабатывает в момент начала эпохи. {epoch}")
+            logger.info(f"Досрочная остановка. {epoch}")
             break
+
+        if best_state is None:
+            best_state = copy.deepcopy(model.state_dict())
 
     # вернём всё, что нужно для сохранения/инференса
     return best_val, best_state, mappings, cardinalities
@@ -200,6 +203,8 @@ def train_with_groupkfold(
 
     # Сохраним "overall best" в корень out_dir (как у вас сейчас)
     best_state, mappings, cardinalities = best_pack
+    if best_pack is None:
+        raise RuntimeError("Обучение не удалось: best_pack равен None")
     torch.save(best_state, out_dir / "modelgkf.pt")
 
     mappings_to_save = {k: {"classes": v["classes"]} for k, v in mappings.items()}

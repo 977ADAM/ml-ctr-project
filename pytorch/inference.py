@@ -23,9 +23,6 @@ def load_model(model_dir=Config.MODEL_DIR, meta_name=Config.META_NAME, model_nam
         hidden=tuple(meta["arch"]["hidden"]),
         dropout=meta["arch"]["dropout"],
     ).to(device)
-    print(model_dir)
-    print(model_dir / meta_name)
-    print(model_dir / model_name)
     model.load_state_dict(torch.load(model_dir / model_name, map_location=device))
     model.eval()
     return model, meta, device
