@@ -15,33 +15,19 @@ try:
     from .config import Config
     from .inference import load_model
     from .model import CTRNet
-    from .utils import set_seed, sigmoid_np, prepare_targets
+    from .utils import (set_seed, sigmoid_np, prepare_targets,
+                    binomial_logloss, binomial_nll_from_logits, make_loader, fit_mappings)
 except ImportError:
     from config import Config
     from inference import load_model
     from model import CTRNet
-    from utils import set_seed, sigmoid_np, prepare_targets
+    from utils import (set_seed, sigmoid_np, prepare_targets,
+                    binomial_logloss, binomial_nll_from_logits, make_loader, fit_mappings)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 
 # ---------- utils ----------
-def binomial_logloss(clicks: np.ndarray, impr: np.ndarray, p: np.ndarray, eps: float = 1e-8) -> float:
-    p = np.clip(p, eps, 1 - eps)
-    ll = clicks * np.log(p) + (impr - clicks) * np.log(1 - p)
-    return float(-ll.sum() / impr.sum())  # среднее на 1 показ
-
-def binomial_nll_from_logits(logits, clicks, impr):
-    """
-    NLL для биномиального распределения:
-    -[k*log(sigmoid)+ (n-k)*log(1-sigmoid)]
-    Реализовано стабильно через log-sigmoid.
-    """
-    # log(sigmoid(x)) = -softplus(-x)
-    # log(1-sigmoid(x)) = -softplus(x)
-    nll = clicks * torch.nn.functional.softplus(-logits) + (impr - clicks) * torch.nn.functional.softplus(logits)
-    return nll.sum() / impr.sum()  # среднее на 1 показ
-
 def auc_from_aggregates(clicks: np.ndarray, impr: np.ndarray, score: np.ndarray) -> float:
     pos_w = clicks.astype(np.float64)
     neg_w = (impr - clicks).astype(np.float64)
@@ -75,27 +61,6 @@ def auc_from_aggregates(clicks: np.ndarray, impr: np.ndarray, score: np.ndarray)
     return auc_num / (total_pos * total_neg)
 
 # ---------- training ----------
-def make_loader(X_cat, clicks, impr, batch_size, shuffle=True):
-    ds = torch.utils.data.TensorDataset(
-        torch.tensor(X_cat, dtype=torch.long),
-        torch.tensor(clicks, dtype=torch.float32),
-        torch.tensor(impr, dtype=torch.float32),
-    )
-    return torch.utils.data.DataLoader(ds, batch_size=batch_size, shuffle=shuffle)
-
-def fit_mappings(df: pd.DataFrame, cat_cols):
-    """
-    Фитим словари по train. Индекс 0 зарезервирован под UNK.
-    """
-    mappings = {}
-    for col in cat_cols:
-        uniq = pd.Index(df[col].astype(str).unique())
-        # UNK=0, остальные с 1
-        classes = ["__UNK__"] + uniq.tolist()
-        value_to_idx = {v: i for i, v in enumerate(classes)}
-        mappings[col] = {"classes": classes, "value_to_idx": value_to_idx}
-    return mappings
-
 def transform_cats(df: pd.DataFrame, cat_cols, mappings) -> np.ndarray:
 
     X_cat = np.zeros((len(df), len(cat_cols)), dtype=np.int64)

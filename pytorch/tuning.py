@@ -19,11 +19,17 @@ from sklearn.model_selection import train_test_split, GroupKFold
 try:
     from .config import Config
     from .model import CTRNet
-    from .utils import set_seed, sigmoid_np
+    from .utils import (set_seed, sigmoid_np, prepare_targets,
+                    binomial_logloss, binomial_nll_from_logits, make_loader, fit_mappings)
+    
 except ImportError:
     from config import Config
     from model import CTRNet
-    from utils import set_seed, sigmoid_np
+    from utils import (set_seed, sigmoid_np, prepare_targets,
+                    binomial_logloss, binomial_nll_from_logits, make_loader, fit_mappings)
+
+
+
 
 class Objective:
 
@@ -251,7 +257,7 @@ def run_optuna(
         "n_trials": len(study.trials),
         "mode": mode,
         "group_cols": list(group_cols) if group_cols else None,
-        "n_splits": n_splits if mode == "gkf" else None,
+        "n_splits": n_splits
     }
 
 
