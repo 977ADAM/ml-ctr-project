@@ -7,13 +7,14 @@ from dataclasses import dataclass
 class Config:
     test_size: float = 0.2
     seed: int = 42
-    emb_dim: int = 16
-    hidden: tuple = (64, 32)
+    emb_dim: int = 8
+    hidden: tuple = (256, 512)
     dropout: float = 0.1
     lr: float = 1e-3
     batch_size: int = 256
-    epochs: int = 30
+    epochs: int = 150
     device: str = "cpu"
+    weight_decay: float = 1e-6
 
     early_stopping_patience = 20
     early_stopping_min_delta = 1e-4
