@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-import argparse
 import copy
 import json
 import logging
-import math
 from dataclasses import replace
 from pathlib import Path
 from typing import Dict, List, Sequence, Tuple, Optional
@@ -14,7 +12,7 @@ import pandas as pd
 import torch
 import optuna
 from optuna.pruners import MedianPruner
-from sklearn.model_selection import train_test_split, GroupKFold
+from sklearn.model_selection import GroupKFold
 
 try:
     from .config import Config
@@ -34,33 +32,6 @@ except ImportError:
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("optuna_tuner")
 
-class Objective:
-
-    def __init__(self, df, cat_cols, impr_col, click_col,
-                 base_cfg, group_cols, n_splits):
-        self.df = df
-        self.cat_cols = cat_cols
-        self.impr_col = impr_col
-        self.click_col = click_col
-        self.base_cfg = base_cfg
-        self.group_cols = group_cols
-        self.n_splits = n_splits
-
-    def __call__(self, trial):
-        return objective_gkf(
-            trial,
-            self.df,
-            self.cat_cols,
-            self.impr_col,
-            self.click_col,
-            self.base_cfg,
-            self.group_cols,
-            self.n_splits
-        )
-
-
-
-
 def _hidden_from_trial(trial: optuna.Trial) -> Tuple[int, ...]:
     n_layers = trial.suggest_int("n_layers", 1, 4)
     h: List[int] = []
@@ -70,20 +41,12 @@ def _hidden_from_trial(trial: optuna.Trial) -> Tuple[int, ...]:
     return tuple(h)
 
 
-
-
-
-
 def suggest_hparams(trial: optuna.Trial, base_cfg: Config) -> Config:
-    """
-    Return a new Config with tuned params (Config is frozen, so we use dataclasses.replace).
-    """
     emb_dim = int(trial.suggest_categorical("emb_dim", [8, 16, 32, 64]))
     hidden = _hidden_from_trial(trial)
     dropout = float(trial.suggest_float("dropout", 0.0, 0.5))
     lr = float(trial.suggest_float("lr", 1e-4, 3e-3, log=True))
     batch_size = int(trial.suggest_categorical("batch_size", [64, 128, 256, 512]))
-    # store separately (not part of Config) via trial.user_attrs
     weight_decay = float(trial.suggest_float("weight_decay", 1e-6, 1e-2, log=True))
     trial.set_user_attr("weight_decay", weight_decay)
 
@@ -180,44 +143,76 @@ def _train_eval_one_split(
     return best_val, best_state, mappings, cardinalities
 
 
+class Objective:
 
+    def __init__(self, df, cat_cols, impr_col, click_col,
+                 base_cfg, group_cols, n_splits):
+        self.df = df
+        self.cat_cols = cat_cols
+        self.impr_col = impr_col
+        self.click_col = click_col
+        self.base_cfg = base_cfg
+        self.group_cols = group_cols
+        self.n_splits = n_splits
 
-
-def objective_gkf(
-    trial: optuna.Trial,
-    df: pd.DataFrame,
-    cat_cols: Sequence[str],
-    impr_col: str,
-    click_col: str,
-    base_cfg: Config,
-    group_cols: Sequence[str],
-    n_splits: int,
-) -> float:
-    cfg = suggest_hparams(trial, base_cfg)
-    weight_decay = float(trial.user_attrs["weight_decay"])
-
-    set_seed(cfg.seed)
-
-    groups = df[list(group_cols)].astype(str).agg("_".join, axis=1).values
-    gkf = GroupKFold(n_splits=n_splits)
-
-    fold_scores: List[float] = []
-    # One shared trial, report mean-to-date (so pruning can act early)
-    for fold, (tr_idx, va_idx) in enumerate(gkf.split(df, y=None, groups=groups), start=1):
-        df_tr = df.iloc[tr_idx].reset_index(drop=True)
-        df_va = df.iloc[va_idx].reset_index(drop=True)
-
-        best_val, *_ = _train_eval_one_split(
-            df_tr, df_va, cat_cols, impr_col, click_col, cfg, weight_decay, trial=None  # per-epoch pruning handled below
+    def __call__(self, trial: optuna.Trial) -> float:
+        # 1. Сэмплируем гиперпараметры
+        cfg = suggest_hparams(trial, self.base_cfg)
+        weight_decay = float(trial.user_attrs["weight_decay"])
+        set_seed(cfg.seed)
+        # 2. Формируем группы для GroupKFold
+        groups = (
+            self.df[list(self.group_cols)]
+            .astype(str)
+            .agg("_".join, axis=1)
+            .values
         )
-        fold_scores.append(best_val)
+        gkf = GroupKFold(n_splits=self.n_splits)
+        fold_scores: List[float] = []
+        # 3. Кросс-валидация
+        for fold, (train_idx, valid_idx) in enumerate(
+            gkf.split(self.df, y=None, groups=groups),
+            start=1,
+        ):
+            df_train = self.df.iloc[train_idx].reset_index(drop=True)
+            df_valid = self.df.iloc[valid_idx].reset_index(drop=True)
 
-        mean_so_far = float(np.mean(fold_scores))
-        trial.report(mean_so_far, step=fold)
-        if trial.should_prune():
-            raise optuna.TrialPruned(f"Pruned at fold={fold} mean_logloss={mean_so_far:.6f}")
+            best_valid, *_ = _train_eval_one_split(
+                df_train=df_train,
+                df_valid=df_valid,
+                cat_cols=self.cat_cols,
+                impr_col=self.impr_col,
+                click_col=self.click_col,
+                cfg=cfg,
+                weight_decay=weight_decay,
+                trial=None,
+            )
+            fold_scores.append(best_valid)
 
-    return float(np.mean(fold_scores))
+            # 4. Репортим mean-to-date для pruning
+            mean_so_far = float(np.mean(fold_scores))
+            trial.report(mean_so_far, step=fold)
+
+            if trial.should_prune():
+                raise optuna.TrialPruned(
+                    f"Обрезано в месте сгиба={fold} mean_logloss={mean_so_far:.6f}"
+                )
+        
+        return float(np.mean(fold_scores))
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 def _mappings_to_save(mappings: Dict[str, Dict[str, object]]) -> Dict[str, Dict[str, object]]:
     return {k: {"classes": v["classes"]} for k, v in mappings.items()}
@@ -279,29 +274,6 @@ def retrain_and_save_best_gkf(
     }
     (out_dir_p / "metagkf.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
     return meta
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 # ---------------- run tuning ----------------
 def run_optuna(
