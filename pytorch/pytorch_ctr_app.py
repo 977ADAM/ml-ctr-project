@@ -7,11 +7,13 @@ from pathlib import Path
 
 # Импортируем функции из вашего файла
 try:
-    from pytorch_ctr_model import encode_row, sigmoid_np
+    from pytorch_ctr_model import encode_row
     from inference import load_model
+    from utils import sigmoid_np
 except ImportError:
-    from .pytorch_ctr_model import encode_row, sigmoid_np
+    from .pytorch_ctr_model import encode_row
     from .inference import load_model
+    from .utils import sigmoid_np
 
     
 st.set_page_config(page_title="CTR Predictor", layout="wide")

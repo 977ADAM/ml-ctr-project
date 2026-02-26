@@ -20,13 +20,15 @@ try:
     from .config import Config
     from .model import CTRNet
     from .utils import (set_seed, sigmoid_np, prepare_targets,
-                    binomial_logloss, binomial_nll_from_logits, make_loader, fit_mappings)
+                    binomial_logloss, binomial_nll_from_logits,
+                    make_loader, fit_mappings, transform_cats)
     
 except ImportError:
     from config import Config
     from model import CTRNet
     from utils import (set_seed, sigmoid_np, prepare_targets,
-                    binomial_logloss, binomial_nll_from_logits, make_loader, fit_mappings)
+                    binomial_logloss, binomial_nll_from_logits,
+                    make_loader, fit_mappings, transform_cats)
 
 
 
@@ -58,7 +60,13 @@ class Objective:
 
 
 
-
+def _hidden_from_trial(trial: optuna.Trial) -> Tuple[int, ...]:
+    n_layers = trial.suggest_int("n_layers", 1, 4)
+    h: List[int] = []
+    for i in range(n_layers):
+        h_i = trial.suggest_categorical(f"h{i}", [16, 32, 64, 128, 256, 512])
+        h.append(int(h_i))
+    return tuple(h)
 
 
 

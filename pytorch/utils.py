@@ -45,3 +45,11 @@ def fit_mappings(df: pd.DataFrame, cat_cols: Sequence[str]) -> Dict[str, Dict[st
         value_to_idx = {v: i for i, v in enumerate(classes)}
         mappings[col] = {"classes": classes, "value_to_idx": value_to_idx}
     return mappings
+
+def transform_cats(df: pd.DataFrame, cat_cols: Sequence[str], mappings: Dict[str, Dict[str, object]]) -> np.ndarray:
+    X_cat = np.zeros((len(df), len(cat_cols)), dtype=np.int64)
+    for j, col in enumerate(cat_cols):
+        m = mappings[col]["value_to_idx"]
+        vals = df[col].astype(str).values
+        X_cat[:, j] = np.fromiter((m.get(v, 0) for v in vals), dtype=np.int64, count=len(vals))
+    return X_cat

@@ -16,13 +16,15 @@ try:
     from .inference import load_model
     from .model import CTRNet
     from .utils import (set_seed, sigmoid_np, prepare_targets,
-                    binomial_logloss, binomial_nll_from_logits, make_loader, fit_mappings)
+                    binomial_logloss, binomial_nll_from_logits,
+                    make_loader, fit_mappings, transform_cats)
 except ImportError:
     from config import Config
     from inference import load_model
     from model import CTRNet
     from utils import (set_seed, sigmoid_np, prepare_targets,
-                    binomial_logloss, binomial_nll_from_logits, make_loader, fit_mappings)
+                    binomial_logloss, binomial_nll_from_logits,
+                    make_loader, fit_mappings, transform_cats)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -61,16 +63,6 @@ def auc_from_aggregates(clicks: np.ndarray, impr: np.ndarray, score: np.ndarray)
     return auc_num / (total_pos * total_neg)
 
 # ---------- training ----------
-def transform_cats(df: pd.DataFrame, cat_cols, mappings) -> np.ndarray:
-
-    X_cat = np.zeros((len(df), len(cat_cols)), dtype=np.int64)
-
-    for j, col in enumerate(cat_cols):
-        m = mappings[col]["value_to_idx"]
-        vals = df[col].astype(str).values
-        # unknown -> 0
-        X_cat[:, j] = np.fromiter((m.get(v, 0) for v in vals), dtype=np.int64, count=len(vals))
-    return X_cat
 
 def train_one_fold(df_train, df_val, cat_cols, impr_col, click_col, cfg):
     # targets

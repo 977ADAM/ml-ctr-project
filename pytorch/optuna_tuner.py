@@ -124,6 +124,21 @@ def transform_cats(df: pd.DataFrame, cat_cols: Sequence[str], mappings: Dict[str
         X_cat[:, j] = np.fromiter((m.get(v, 0) for v in vals), dtype=np.int64, count=len(vals))
     return X_cat
 
+def transform_cats(df: pd.DataFrame, cat_cols, mappings) -> np.ndarray:
+    X_cat = np.zeros((len(df), len(cat_cols)), dtype=np.int64)
+    for j, col in enumerate(cat_cols):
+        m = mappings[col]["value_to_idx"]
+        vals = df[col].astype(str).values
+        X_cat[:, j] = np.fromiter((m.get(v, 0) for v in vals), dtype=np.int64, count=len(vals))
+    return X_cat
+
+
+
+
+
+
+
+
 def prepare_targets(df: pd.DataFrame, impr_col: str, click_col: str) -> Tuple[np.ndarray, np.ndarray]:
     impr = df[impr_col].astype(np.float32).values
     clicks = df[click_col].astype(np.float32).values
@@ -133,7 +148,6 @@ def _hidden_from_trial(trial: optuna.Trial) -> Tuple[int, ...]:
     n_layers = trial.suggest_int("n_layers", 1, 4)
     h: List[int] = []
     for i in range(n_layers):
-        # powers of 2 are usually stable for MLP
         h_i = trial.suggest_categorical(f"h{i}", [16, 32, 64, 128, 256, 512])
         h.append(int(h_i))
     return tuple(h)
