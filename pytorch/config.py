@@ -12,7 +12,7 @@ class Config:
     dropout: float = 0.1
     lr: float = 1e-3
     batch_size: int = 256
-    epochs: int = 150
+    epochs: int = 30
     device: str = "cpu"
 
     early_stopping_patience = 20
@@ -21,3 +21,4 @@ class Config:
     MODEL_DIR = "pytorch/models"
     MODEL_NAME = "modelgkf.pt"
     META_NAME = "metagkf.json"
+    DATA_PATH = "data/dataset.csv"

@@ -33,87 +33,6 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 logger = logging.getLogger("optuna_tuner")
 
 
-def _train_eval_one_split(
-    df_train: pd.DataFrame,
-    df_val: pd.DataFrame,
-    cat_cols: Sequence[str],
-    impr_col: str,
-    click_col: str,
-    cfg: Config,
-    weight_decay: float,
-    trial: Optional[optuna.Trial] = None,
-) -> Tuple[float, Dict[str, torch.Tensor], Dict[str, Dict[str, object]], List[int]]:
-    """
-    Train on df_train, evaluate on df_val.
-    Returns: best_val_logloss, best_state_dict, mappings, cardinalities
-    """
-    clicks_tr, impr_tr = prepare_targets(df_train, impr_col, click_col)
-    clicks_va, impr_va = prepare_targets(df_val, impr_col, click_col)
-
-    mappings = fit_mappings(df_train, cat_cols)
-    X_tr = transform_cats(df_train, cat_cols, mappings)
-    X_va = transform_cats(df_val, cat_cols, mappings)
-
-    cardinalities = [len(mappings[col]["classes"]) for col in cat_cols]
-
-    device = torch.device(cfg.device)
-    model = CTRNet(cardinalities, emb_dim=cfg.emb_dim, hidden=cfg.hidden, dropout=cfg.dropout).to(device)
-    opt = torch.optim.AdamW(model.parameters(), lr=cfg.lr, weight_decay=weight_decay)
-
-    tr_loader = make_loader(X_tr, clicks_tr, impr_tr, cfg.batch_size, shuffle=True)
-    va_loader = make_loader(X_va, clicks_va, impr_va, cfg.batch_size, shuffle=False)
-
-    best_val = float("inf")
-    best_state = None
-    patience = 0
-
-    for epoch in range(1, cfg.epochs + 1):
-        model.train()
-        for xb, kb, nb in tr_loader:
-            xb, kb, nb = xb.to(device), kb.to(device), nb.to(device)
-            opt.zero_grad(set_to_none=True)
-            logits = model(xb)
-            loss = binomial_nll_from_logits(logits, kb, nb)
-            loss.backward()
-            opt.step()
-
-        # eval
-        model.eval()
-        with torch.no_grad():
-            all_logits, all_k, all_n = [], [], []
-            for xb, kb, nb in va_loader:
-                xb = xb.to(device)
-                all_logits.append(model(xb).detach().cpu().numpy())
-                all_k.append(kb.numpy())
-                all_n.append(nb.numpy())
-
-            logits = np.concatenate(all_logits)
-            k = np.concatenate(all_k)
-            n = np.concatenate(all_n)
-            p = sigmoid_np(logits)
-            val = binomial_logloss(k, n, p)
-
-        # report to optuna
-        if trial is not None:
-            trial.report(val, step=epoch)
-            if trial.should_prune():
-                raise optuna.TrialPruned(f"Pruned at epoch={epoch} val_logloss={val:.6f}")
-
-        # early stopping
-        improved = val < (best_val - cfg.early_stopping_min_delta)
-        if improved:
-            best_val = val
-            best_state = copy.deepcopy(model.state_dict())
-            patience = 0
-        else:
-            patience += 1
-            if patience >= cfg.early_stopping_patience:
-                break
-
-    assert best_state is not None
-    return best_val, best_state, mappings, cardinalities
-
-
 class Objective:
 
     def __init__(self, df, cat_cols, impr_col, click_col,
@@ -270,20 +189,6 @@ class Objective:
         assert best_state is not None
         return best_val, best_state, mappings, cardinalities
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 def _mappings_to_save(mappings: Dict[str, Dict[str, object]]) -> Dict[str, Dict[str, object]]:
     return {k: {"classes": v["classes"]} for k, v in mappings.items()}
 
@@ -354,8 +259,9 @@ def run_optuna(
         trials: int = 50,
         timeout: Optional[int] = None,
     ):
-    df = pd.read_csv("data/dataset.csv")
     base_cfg = Config()
+    df = pd.read_csv(base_cfg.DATA_PATH)
+    
 
     cat_cols = ["ID кампании", "ID баннера", "Тип баннера", "Тип устройства"]
     impr_col = "Показы"
@@ -378,7 +284,7 @@ def run_optuna(
     
     best = study.best_trial
     best_params = dict(best.params)
-    best_params["weight_decay"] = float(best.user_attrs.get("weight_decay", 0.0))
+    best_params["weight_decay"] = float(best_params["weight_decay"])
 
     result = {
         "best_value": float(best.value),
@@ -417,8 +323,8 @@ def run_optuna(
 if __name__ == "__main__":
     run_optuna(
         mode="gkf",
-        out_dir="pytorch/optuna_results/gkf",
+        out_dir="pytorch/optuna",
         n_splits=5,
-        trials=80,
+        trials=30,
         timeout=None,
     )
