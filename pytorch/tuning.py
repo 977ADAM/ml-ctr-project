@@ -32,36 +32,6 @@ except ImportError:
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("optuna_tuner")
 
-def _hidden_from_trial(trial: optuna.Trial) -> Tuple[int, ...]:
-    n_layers = trial.suggest_int("n_layers", 1, 4)
-    h: List[int] = []
-    for i in range(n_layers):
-        h_i = trial.suggest_categorical(f"h{i}", [16, 32, 64, 128, 256, 512])
-        h.append(int(h_i))
-    return tuple(h)
-
-
-def suggest_hparams(trial: optuna.Trial, base_cfg: Config) -> Config:
-    emb_dim = int(trial.suggest_categorical("emb_dim", [8, 16, 32, 64]))
-    hidden = _hidden_from_trial(trial)
-    dropout = float(trial.suggest_float("dropout", 0.0, 0.5))
-    lr = float(trial.suggest_float("lr", 1e-4, 3e-3, log=True))
-    batch_size = int(trial.suggest_categorical("batch_size", [64, 128, 256, 512]))
-    weight_decay = float(trial.suggest_float("weight_decay", 1e-6, 1e-2, log=True))
-    trial.set_user_attr("weight_decay", weight_decay)
-
-    return replace(
-        base_cfg,
-        emb_dim=emb_dim,
-        hidden=hidden,
-        dropout=dropout,
-        lr=lr,
-        batch_size=batch_size,
-        weight_decay=weight_decay,
-    )
-
-
-
 
 def _train_eval_one_split(
     df_train: pd.DataFrame,
@@ -178,12 +148,9 @@ class Objective:
             df_train = self.df.iloc[train_idx].reset_index(drop=True)
             df_valid = self.df.iloc[valid_idx].reset_index(drop=True)
 
-            best_valid, *_ = _train_eval_one_split(
+            best_valid, *_ = self.train_eval_one_split(
                 df_train=df_train,
                 df_valid=df_valid,
-                cat_cols=self.cat_cols,
-                impr_col=self.impr_col,
-                click_col=self.click_col,
                 cfg=cfg,
                 weight_decay=weight_decay,
                 trial=None,
@@ -204,7 +171,7 @@ class Objective:
     
     def suggest_hparams(self, trial: optuna.Trial) -> Config:
         emb_dim = int(trial.suggest_categorical("emb_dim", [8, 16, 32, 64]))
-        hidden = _hidden_from_trial(trial)
+        hidden = self.hidden_from_trial(trial)
         dropout = float(trial.suggest_float("dropout", 0.0, 0.5))
         lr = float(trial.suggest_float("lr", 1e-4, 3e-3, log=True))
         batch_size = int(trial.suggest_categorical("batch_size", [64, 128, 256, 512]))
@@ -219,6 +186,89 @@ class Objective:
             batch_size=batch_size,
             weight_decay=weight_decay,
         )
+    
+    def hidden_from_trial(self, trial: optuna.Trial) -> Tuple[int, ...]:
+        n_layers = trial.suggest_int("n_layers", 1, 4)
+        h: List[int] = []
+        for i in range(n_layers):
+            h_i = trial.suggest_categorical(f"h{i}", [16, 32, 64, 128, 256, 512])
+            h.append(int(h_i))
+        return tuple(h)
+    
+    def train_eval_one_split(
+        self,
+        df_train: pd.DataFrame,
+        df_valid: pd.DataFrame,
+        cfg: Config,
+        weight_decay: float,
+        trial: Optional[optuna.Trial] = None,
+    ) -> Tuple[float, Dict[str, torch.Tensor], Dict[str, Dict[str, object]], List[int]]:
+
+        clicks_train, impr_train = prepare_targets(df_train, self.impr_col, self.click_col)
+        clicks_valid, impr_valid = prepare_targets(df_valid, self.impr_col, self.click_col)
+
+        mappings = fit_mappings(df_train, self.cat_cols)
+        X_train = transform_cats(df_train, self.cat_cols, mappings)
+        X_valid = transform_cats(df_valid, self.cat_cols, mappings)
+
+        cardinalities = [len(mappings[col]["classes"]) for col in self.cat_cols]
+
+        device = torch.device(cfg.device)
+        model = CTRNet(cardinalities, emb_dim=cfg.emb_dim, hidden=cfg.hidden, dropout=cfg.dropout).to(device)
+        opt = torch.optim.AdamW(model.parameters(), lr=cfg.lr, weight_decay=weight_decay)
+
+        tr_loader = make_loader(X_train, clicks_train, impr_train, cfg.batch_size, shuffle=True)
+        va_loader = make_loader(X_valid, clicks_valid, impr_valid, cfg.batch_size, shuffle=False)
+
+        best_val = float("inf")
+        best_state = None
+        patience = 0
+
+        for epoch in range(1, cfg.epochs + 1):
+            model.train()
+            for xb, kb, nb in tr_loader:
+                xb, kb, nb = xb.to(device), kb.to(device), nb.to(device)
+                opt.zero_grad(set_to_none=True)
+                logits = model(xb)
+                loss = binomial_nll_from_logits(logits, kb, nb)
+                loss.backward()
+                opt.step()
+
+            # eval
+            model.eval()
+            with torch.no_grad():
+                all_logits, all_k, all_n = [], [], []
+                for xb, kb, nb in va_loader:
+                    xb = xb.to(device)
+                    all_logits.append(model(xb).detach().cpu().numpy())
+                    all_k.append(kb.numpy())
+                    all_n.append(nb.numpy())
+
+                logits = np.concatenate(all_logits)
+                k = np.concatenate(all_k)
+                n = np.concatenate(all_n)
+                p = sigmoid_np(logits)
+                val = binomial_logloss(k, n, p)
+
+            # report to optuna
+            if trial is not None:
+                trial.report(val, step=epoch)
+                if trial.should_prune():
+                    raise optuna.TrialPruned(f"Pruned at epoch={epoch} val_logloss={val:.6f}")
+
+            # early stopping
+            improved = val < (best_val - cfg.early_stopping_min_delta)
+            if improved:
+                best_val = val
+                best_state = copy.deepcopy(model.state_dict())
+                patience = 0
+            else:
+                patience += 1
+                if patience >= cfg.early_stopping_patience:
+                    break
+
+        assert best_state is not None
+        return best_val, best_state, mappings, cardinalities
 
 
 
