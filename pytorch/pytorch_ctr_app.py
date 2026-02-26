@@ -2,17 +2,13 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import torch
-import json
-from pathlib import Path
 
 # Импортируем функции из вашего файла
 try:
-    from pytorch_ctr_model import encode_row
-    from inference import load_model
+    from inference import load_model, encode_row
     from utils import sigmoid_np
 except ImportError:
-    from .pytorch_ctr_model import encode_row
-    from .inference import load_model
+    from .inference import load_model, encode_row
     from .utils import sigmoid_np
 
     
@@ -20,14 +16,9 @@ st.set_page_config(page_title="CTR Predictor", layout="wide")
 
 st.title("📊 CTR Model Test Interface")
 
-MODEL_DIR = "pytorch/models"
-MODEL_NAME = "model.pt"
-META_NAME = "meta.json"
-
-
 @st.cache_resource
 def load_ctr_model():
-    model, meta, device = load_model(model_dir=MODEL_DIR, meta_name=META_NAME, model_name=MODEL_NAME)
+    model, meta, device = load_model()
     return model, meta, device
 
 

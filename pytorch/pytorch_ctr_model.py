@@ -332,8 +332,8 @@ def encode_row(row: dict, meta: dict) -> np.ndarray:
 
 
 @torch.no_grad()
-def predict_ctr(rows, model_dir="pytorch/models"):
-    model, meta, device = load_model(model_dir=model_dir, meta_name="metagkf.json", model_name="modelgkf.pt")
+def predict_ctr(rows):
+    model, meta, device = load_model(model_dir=Config.MODEL_DIR, meta_name=Config.META_NAME, model_name=Config.MODEL_NAME)
 
     X = np.stack([encode_row(r, meta) for r in rows], axis=0)
 
@@ -375,5 +375,5 @@ if __name__ == "__main__":
         {"ID кампании": 9, "ID баннера": 9, "Тип баннера": "interactive", "Тип устройства": "Смартфон", "Показы": 500},
     ]
 
-    preds = predict_ctr(rows, model_dir="pytorch/models")
+    preds = predict_ctr(rows)
     logger.info(f"Pred CTR: {preds}")

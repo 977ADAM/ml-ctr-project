@@ -17,3 +17,7 @@ class Config:
 
     early_stopping_patience = 20
     early_stopping_min_delta = 1e-4
+
+    MODEL_DIR = "pytorch/models"
+    MODEL_NAME = "modelgkf.pt"
+    META_NAME = "metagkf.json"
