@@ -11,7 +11,7 @@ class Config:
     hidden: tuple = (64, 32)
     dropout: float = 0.1
     lr: float = 1e-3
-    batch_size: int = 64
+    batch_size: int = 128
     epochs: int = 100
     device: str = "cpu"
 

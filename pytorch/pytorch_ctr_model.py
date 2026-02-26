@@ -8,6 +8,7 @@ import copy
 import numpy as np
 import pandas as pd
 import torch
+import optuna
 from sklearn.model_selection import train_test_split, GroupKFold
 
 try:
@@ -114,7 +115,7 @@ def transform_cats(df: pd.DataFrame, cat_cols, mappings) -> np.ndarray:
         X_cat[:, j] = np.fromiter((m.get(v, 0) for v in vals), dtype=np.int64, count=len(vals))
     return X_cat
 
-def prepare_targets(df: pd.DataFrame, impr_col, click_col):
+def prepare_targets(df, impr_col, click_col):
     impr = df[impr_col].astype(np.float32).values
     clicks = df[click_col].astype(np.float32).values
 
@@ -124,9 +125,6 @@ def prepare_targets(df: pd.DataFrame, impr_col, click_col):
     # if np.any(clicks < 0) or np.any(clicks > impr):
     #     raise ValueError("Найдены некорректные Переходы (clicks) относительно Показы (impr).")
     return clicks, impr
-
-
-
 
 def train_one_fold(df_train, df_val, cat_cols, impr_col, click_col, cfg):
     # targets
@@ -186,19 +184,19 @@ def train_one_fold(df_train, df_val, cat_cols, impr_col, click_col, cfg):
     # вернём всё, что нужно для сохранения/инференса
     return best_val, best_state, mappings, cardinalities
 
+def train_with_groupkfold(
+        df,
+        cat_cols=None,
+        impr_col=None,
+        click_col=None,
+        out_dir="pytorch/models_gkf",
+        n_splits=5,
+        group_col=["ID кампании", "ID баннера"]
+    ):
 
-
-def train_with_groupkfold(csv_path="dataset.csv", out_dir="pytorch/models_gkf", n_splits=5, group_col=["ID кампании", "ID баннера"]):
     cfg = Config()
     set_seed(cfg.seed)
 
-    df = pd.read_csv(csv_path)
-
-    cat_cols = ["ID кампании", "ID баннера", "Тип баннера", "Тип устройства"]
-    impr_col = "Показы"
-    click_col = "Переходы"
-
-    # группы
     groups = (
         df[group_col]
         .astype(str)
@@ -213,7 +211,7 @@ def train_with_groupkfold(csv_path="dataset.csv", out_dir="pytorch/models_gkf", 
 
     fold_scores = []
     best_overall = 1e9
-    best_pack = None  # (state_dict, mappings, cardinalities)
+    best_pack = None
 
     for fold, (tr_idx, va_idx) in enumerate(gkf.split(df, y=None, groups=groups), start=1):
         logger.info(f"=== Fold {fold}/{n_splits} | group_col={group_col} ===")
@@ -246,7 +244,6 @@ def train_with_groupkfold(csv_path="dataset.csv", out_dir="pytorch/models_gkf", 
         }
         (fold_dir / "metagkf.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
 
-        # а ещё — держим "лучший фолд" как общий best для деплоя
         if best_val < best_overall:
             best_overall = best_val
             best_pack = (best_state, mappings, cardinalities)
@@ -272,9 +269,13 @@ def train_with_groupkfold(csv_path="dataset.csv", out_dir="pytorch/models_gkf", 
     logger.info(f"Saved best overall to: {out_dir.resolve()}")
     logger.info(f"Best overall val logloss: {best_overall:.6f}")
 
-
-
-def train_one_run(df, cat_cols=None, impr_col=None, click_col=None, out_dir="pytorch/models"):
+def train_one_run(
+        df,
+        cat_cols=None,
+        impr_col=None,
+        click_col=None,
+        out_dir="pytorch/models"
+    ):
     cfg = Config()
     set_seed(cfg.seed)
 
@@ -384,7 +385,7 @@ def encode_row(row: dict, meta: dict) -> np.ndarray:
 
 @torch.no_grad()
 def predict_ctr(rows, model_dir="pytorch/models"):
-    model, meta, device = load_model(model_dir=model_dir)
+    model, meta, device = load_model(model_dir=model_dir, meta_name="metagkf.json", model_name="modelgkf.pt")
 
     X = np.stack([encode_row(r, meta) for r in rows], axis=0)
 
@@ -404,20 +405,27 @@ if __name__ == "__main__":
     impr_col = "Показы"
     click_col = "Переходы"
 
-    train_one_run(
+    # train_one_run(
+    #     df,
+    #     cat_cols=cat_cols,
+    #     impr_col=impr_col,
+    #     click_col=click_col,
+    #     out_dir="pytorch/models"
+    # )
+
+    train_with_groupkfold(
         df,
         cat_cols=cat_cols,
         impr_col=impr_col,
         click_col=click_col,
-        out_dir="pytorch/models"
-    )
+        out_dir="pytorch/models",
+        n_splits=5,
+        group_col=["ID кампании", "ID баннера"])
 
-    # train_with_groupkfold(csv_path="data/dataset.csv", out_dir="pytorch/models", n_splits=5, group_col=["ID кампании", "ID баннера"])
-
-    # Пример инференса:
     rows = [
         {"ID кампании": 3405596, "ID баннера": 15262577, "Тип баннера": "interactive", "Тип устройства": "Компьютер", "Показы": 12596},
         {"ID кампании": 9, "ID баннера": 9, "Тип баннера": "interactive", "Тип устройства": "Смартфон", "Показы": 500},
     ]
+
     preds = predict_ctr(rows, model_dir="pytorch/models")
     logger.info(f"Pred CTR: {preds}")
