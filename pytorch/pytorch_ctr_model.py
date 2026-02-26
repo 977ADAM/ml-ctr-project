@@ -5,9 +5,12 @@ from pathlib import Path
 import logging
 import copy
 
+import mlflow
+import mlflow.pytorch
 import numpy as np
 import pandas as pd
 import torch
+from sklearn.metrics import average_precision_score
 from sklearn.model_selection import train_test_split, GroupKFold
 
 try:
@@ -27,6 +30,9 @@ except ImportError:
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
+
+mlflow.set_tracking_uri("file://" + str(Path("mlruns").resolve()))
+mlflow.set_experiment("CTR Prediction with PyTorch")
 
 # ---------- utils ----------
 def auc_from_aggregates(clicks: np.ndarray, impr: np.ndarray, score: np.ndarray) -> float:
@@ -60,6 +66,29 @@ def auc_from_aggregates(clicks: np.ndarray, impr: np.ndarray, score: np.ndarray)
         i = j
 
     return auc_num / (total_pos * total_neg)
+
+def pr_auc_from_aggregates(clicks: np.ndarray, impr: np.ndarray, score: np.ndarray) -> float:
+    """
+    Average Precision (PR-AUC) для агрегатов:
+    clicks = k, impr = n, score = p (один скор на строку).
+    Эквивалентно разворачиванию по показам, но без огромной памяти.
+    """
+    clicks = clicks.astype(np.float64)
+    impr = impr.astype(np.float64)
+    neg = impr - clicks
+
+    total_pos = clicks.sum()
+    total_neg = neg.sum()
+    if total_pos == 0 or total_neg == 0:
+        return float("nan")
+
+    # 2 "псевдо-сэмпла" на строку: положительный и отрицательный с весами
+    y_true = np.concatenate([np.ones_like(clicks, dtype=int), np.zeros_like(neg, dtype=int)])
+    y_score = np.concatenate([score, score])
+    w = np.concatenate([clicks, neg])
+
+    # average_precision_score поддерживает sample_weight
+    return float(average_precision_score(y_true, y_score, sample_weight=w))
 
 # ---------- training ----------
 def train_one_fold(df_train, df_val, cat_cols, impr_col, click_col, cfg):
@@ -237,91 +266,133 @@ def train_one_run(
         df, clicks, impr, test_size=cfg.test_size, random_state=cfg.seed
     )
 
+    mlflow.log_params({
+        "n_train": len(df_train),
+        "n_test": len(df_test),
+        "n_features": len(cat_cols),
+    })
+
     mappings = fit_mappings(df_train, cat_cols)
 
     X_tr = transform_cats(df_train, cat_cols, mappings)
     X_te = transform_cats(df_test, cat_cols, mappings)
 
     cardinalities = [len(mappings[col]["classes"]) for col in cat_cols]
-    # model = CTRNet(cardinalities, emb_dim=cfg.emb_dim, hidden=cfg.hidden, dropout=cfg.dropout).to(cfg.device)
-    model = DeepFM(cardinalities, emb_dim=cfg.emb_dim, hidden=cfg.hidden, dropout=cfg.dropout).to(cfg.device)
 
-    opt = torch.optim.AdamW(model.parameters(), lr=cfg.lr)
+    with mlflow.start_run(run_name='DeepFM') as run:
+        mlflow.log_params({
+            "emb_dim": cfg.emb_dim,
+            "hidden": cfg.hidden,
+            "dropout": cfg.dropout,
+            "lr": cfg.lr,
+            "batch_size": cfg.batch_size,
+            "epochs": cfg.epochs,
+            "early_stopping_patience": cfg.early_stopping_patience,
+            "early_stopping_min_delta": cfg.early_stopping_min_delta,
+        })
+        mlflow.set_tags({
+            "model_type": "DeepFM",
+            "framework": "pytorch",
+            "task": "CTR",
+        })
 
-    tr_loader = make_loader(X_tr, c_train, n_train, cfg.batch_size, shuffle=True)
-    te_loader = make_loader(X_te, c_test, n_test, cfg.batch_size, shuffle=False)
+        # model = CTRNet(cardinalities, emb_dim=cfg.emb_dim, hidden=cfg.hidden, dropout=cfg.dropout).to(cfg.device)
+        model = DeepFM(cardinalities, emb_dim=cfg.emb_dim, hidden=cfg.hidden, dropout=cfg.dropout).to(cfg.device)
 
-    best_val = 1e9
-    patience_counter = 0
-    out_dir = Path(out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
+        opt = torch.optim.AdamW(model.parameters(), lr=cfg.lr)
 
-    for epoch in range(1, cfg.epochs + 1):
-        model.train()
-        tr_loss = 0.0
-        for xb, kb, nb in tr_loader:
-            xb, kb, nb = xb.to(cfg.device), kb.to(cfg.device), nb.to(cfg.device)
-            opt.zero_grad()
-            logits = model(xb)
-            loss = binomial_nll_from_logits(logits, kb, nb)
-            loss.backward()
-            opt.step()
-            tr_loss += loss.item()
+        tr_loader = make_loader(X_tr, c_train, n_train, cfg.batch_size, shuffle=True)
+        te_loader = make_loader(X_te, c_test, n_test, cfg.batch_size, shuffle=False)
 
-        model.eval()
-        with torch.no_grad():
-            # оценим logloss на 1 показ
-            all_logits = []
-            all_k = []
-            all_n = []
-            for xb, kb, nb in te_loader:
-                xb = xb.to(cfg.device)
-                logits = model(xb).detach().cpu().numpy()
-                all_logits.append(logits)
-                all_k.append(kb.numpy())
-                all_n.append(nb.numpy())
+        best_val = 1e9
+        patience_counter = 0
+        out_dir = Path(out_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
 
-            logits = np.concatenate(all_logits)
-            k = np.concatenate(all_k)
-            n = np.concatenate(all_n)
-            p = sigmoid_np(logits)
-            val_logloss = binomial_logloss(k, n, p)
-            val_auc = auc_from_aggregates(k, n, p)
+        for epoch in range(1, cfg.epochs + 1):
+            model.train()
+            tr_loss = 0.0
+            for xb, kb, nb in tr_loader:
+                xb, kb, nb = xb.to(cfg.device), kb.to(cfg.device), nb.to(cfg.device)
+                opt.zero_grad()
+                logits = model(xb)
+                loss = binomial_nll_from_logits(logits, kb, nb)
+                loss.backward()
+                opt.step()
+                tr_loss += loss.item()
 
-        logger.info(
-            f"Epoch {epoch:02d}\n"
-            f"train_loss = {tr_loss/len(tr_loader):.6f}\n"
-            f"val_logloss = {val_logloss:.6f}\n"
-            f"val_auc = {val_auc:.6f}\n"
-            "-----------------------------------------------------"
+            model.eval()
+            with torch.no_grad():
+                # оценим logloss на 1 показ
+                all_logits = []
+                all_k = []
+                all_n = []
+                for xb, kb, nb in te_loader:
+                    xb = xb.to(cfg.device)
+                    logits = model(xb).detach().cpu().numpy()
+                    all_logits.append(logits)
+                    all_k.append(kb.numpy())
+                    all_n.append(nb.numpy())
+
+                logits = np.concatenate(all_logits)
+                k = np.concatenate(all_k)
+                n = np.concatenate(all_n)
+                p = sigmoid_np(logits)
+                val_logloss = binomial_logloss(k, n, p)
+                val_auc = auc_from_aggregates(k, n, p)
+                train_loss = tr_loss / len(tr_loader)
+                val_pr_auc = pr_auc_from_aggregates(k, n, p)
+
+            mlflow.log_metric("val_auc", val_auc, step=epoch)
+            mlflow.log_metric("val_logloss", val_logloss, step=epoch)
+            mlflow.log_metric("train_loss", train_loss, step=epoch)
+            mlflow.log_metric("val_pr_auc", val_pr_auc, step=epoch)
+            mlflow.log_metric("val_ctr_mean", np.sum(k) / np.sum(n))
+
+            logger.info(
+                f"Epoch {epoch:02d}\n"
+                f"train_loss = {train_loss:.6f}\n"
+                f"val_logloss = {val_logloss:.6f}\n"
+                f"val_auc = {val_auc:.6f}\n"
+                f"val_pr_auc = {val_pr_auc:.6f}\n"
+                "-----------------------------------------------------"
+            )
+
+            if val_logloss < best_val - cfg.early_stopping_min_delta:
+                best_val = val_logloss
+                patience_counter = 0
+                torch.save(model.state_dict(), out_dir / "model.pt")
+            else:
+                patience_counter += 1
+
+            if patience_counter >= cfg.early_stopping_patience:
+                logger.info(f"Досрочная остановка срабатывает в момент начала эпохи. {epoch}")
+                break
+
+        
+        mlflow.log_metric("best_val_logloss", best_val)
+
+        mappings_to_save = {k: {"classes": v["classes"]} for k, v in mappings.items()}
+        meta = {
+            "cat_cols": cat_cols,
+            "impr_col": impr_col,
+            "click_col": click_col,
+            "mappings": mappings_to_save,
+            "cardinalities": cardinalities,
+            "arch": {"emb_dim": cfg.emb_dim, "hidden": list(cfg.hidden), "dropout": cfg.dropout},
+        }
+        (out_dir / "meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+
+        model.load_state_dict(torch.load(out_dir / "model.pt"))
+        mlflow.pytorch.log_model(
+            model,
+            artifact_path="model",
+            registered_model_name="CTR_DeepFM"
         )
+        mlflow.log_artifact(str(out_dir / "meta.json"), artifact_path="model")
 
-        if val_logloss < best_val - cfg.early_stopping_min_delta:
-            best_val = val_logloss
-            patience_counter = 0
-            torch.save(model.state_dict(), out_dir / "model.pt")
-        else:
-            patience_counter += 1
-
-        if patience_counter >= cfg.early_stopping_patience:
-            logger.info(f"Досрочная остановка срабатывает в момент начала эпохи. {epoch}")
-            break
-
-    # сохраняем метаданные (маппинги категорий + список колонок)
-    # value_to_idx в json не пишем (он восстановится из classes)
-    mappings_to_save = {k: {"classes": v["classes"]} for k, v in mappings.items()}
-    meta = {
-        "cat_cols": cat_cols,
-        "impr_col": impr_col,
-        "click_col": click_col,
-        "mappings": mappings_to_save,
-        "cardinalities": cardinalities,
-        "arch": {"emb_dim": cfg.emb_dim, "hidden": list(cfg.hidden), "dropout": cfg.dropout},
-    }
-    (out_dir / "meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
-
-    logger.info(f"Saved to: {out_dir.resolve()}")
-    logger.info(f"Best val logloss: {best_val:.6f}")
+        logger.info(f"Saved to: {out_dir.resolve()}")
+        logger.info(f"Best val logloss: {best_val:.6f}")
 
 # ---------- inference ----------
 @torch.no_grad()
