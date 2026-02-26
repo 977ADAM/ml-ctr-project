@@ -13,14 +13,14 @@ from sklearn.model_selection import train_test_split, GroupKFold
 
 try:
     from .config import Config
-    from .inference import load_model
+    from .inference import load_model, encode_row
     from .model import CTRNet
     from .utils import (set_seed, sigmoid_np, prepare_targets,
                     binomial_logloss, binomial_nll_from_logits,
                     make_loader, fit_mappings, transform_cats)
 except ImportError:
     from config import Config
-    from inference import load_model
+    from inference import load_model, encode_row
     from model import CTRNet
     from utils import (set_seed, sigmoid_np, prepare_targets,
                     binomial_logloss, binomial_nll_from_logits,
@@ -325,17 +325,6 @@ def train_one_run(
 
 
 # ---------- inference ----------
-def encode_row(row: dict, meta: dict) -> np.ndarray:
-    x = []
-    for col in meta["cat_cols"]:
-        classes = meta["mappings"][col]["classes"]
-        v = str(row.get(col, ""))
-        # unknown -> 0 (можно сделать отдельный UNK, но для простоты так)
-        idx = classes.index(v) if v in classes else 0
-        x.append(idx)
-    return np.array(x, dtype=np.int64)
-
-
 @torch.no_grad()
 def predict_ctr(rows):
     model, meta, device = load_model(model_dir=Config.MODEL_DIR, meta_name=Config.META_NAME, model_name=Config.MODEL_NAME)
