@@ -301,8 +301,8 @@ def train_one_run(
             "task": "CTR",
         })
 
-        # model = CTRNet(cardinalities, emb_dim=cfg.emb_dim, hidden=cfg.hidden, dropout=cfg.dropout).to(cfg.device)
-        model = DeepFM(cardinalities, emb_dim=cfg.emb_dim, hidden=cfg.hidden, dropout=cfg.dropout).to(cfg.device)
+        model = CTRNet(cardinalities, emb_dim=cfg.emb_dim, hidden=cfg.hidden, dropout=cfg.dropout).to(cfg.device)
+        # model = DeepFM(cardinalities, emb_dim=cfg.emb_dim, hidden=cfg.hidden, dropout=cfg.dropout).to(cfg.device)
 
         opt = torch.optim.AdamW(model.parameters(), lr=cfg.lr)
 
@@ -424,22 +424,22 @@ if __name__ == "__main__":
     impr_col = "Показы"
     click_col = "Переходы"
 
-    train_one_run(
-        df,
-        cat_cols=cat_cols,
-        impr_col=impr_col,
-        click_col=click_col,
-        out_dir="pytorch/models"
-    )
-
-    # train_with_groupkfold(
+    # train_one_run(
     #     df,
     #     cat_cols=cat_cols,
     #     impr_col=impr_col,
     #     click_col=click_col,
-    #     out_dir="pytorch/models",
-    #     n_splits=5,
-    #     group_col=["ID кампании", "ID баннера"])
+    #     out_dir="pytorch/models"
+    # )
+
+    train_with_groupkfold(
+        df,
+        cat_cols=cat_cols,
+        impr_col=impr_col,
+        click_col=click_col,
+        out_dir="pytorch/models",
+        n_splits=5,
+        group_col=["ID кампании", "ID баннера"])
 
     rows = [
         {"ID кампании": 3405596, "ID баннера": 15262577, "Тип баннера": "interactive", "Тип устройства": "Компьютер", "Показы": 12596},

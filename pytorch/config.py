@@ -20,6 +20,6 @@ class Config:
     early_stopping_min_delta = 1e-4
 
     MODEL_DIR = "pytorch/models"
-    MODEL_NAME = "model.pt"
-    META_NAME = "meta.json"
+    MODEL_NAME = "modelgkf.pt"
+    META_NAME = "metagkf.json"
     DATA_PATH = "data/dataset.csv"

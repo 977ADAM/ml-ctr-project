@@ -17,7 +17,7 @@ def load_model(model_dir=Config.MODEL_DIR, meta_name=Config.META_NAME, model_nam
     meta = json.loads((model_dir / meta_name).read_text(encoding="utf-8"))
     device = torch.device(device)
 
-    model = DeepFM(
+    model = CTRNet(
         meta["cardinalities"],
         emb_dim=meta["arch"]["emb_dim"],
         hidden=tuple(meta["arch"]["hidden"]),
